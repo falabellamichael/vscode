@@ -4,6 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { chmod, mkdtemp, rm, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from '../../../../base/common/path.js';
+import { isWindows } from '../../../../base/common/platform.js';
 import sinon from 'sinon';
 import { DeferredPromise } from '../../../../base/common/async.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
@@ -89,6 +93,20 @@ suite('Devin Subscription Agent', () => {
 		f.onNew = (transport, request) => transport.reply(request, { sessionId: 'native', configOptions: [nativeApprovalMode('accept-edits')] });
 		return { f, configured, restricted, changed, rootChanged };
 	}
+
+	(isWindows ? test.skip : test)('reports a non-JSON model catalog from the Devin executable as a catalog failure', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'devin-catalog-'));
+		try {
+			const executable = join(directory, 'devin');
+			await writeFile(executable, '#!/bin/sh\necho "Please sign in to continue"\n');
+			await chmod(executable, 0o755);
+			const agent = store.add(new DevinSubscriptionAgent(executable));
+			await assert.rejects(agent.authenticate(DEVIN_SUBSCRIPTION_RESOURCE, 'browser-token'), /Could not load the Devin model catalog/);
+			assert.deepStrictEqual(agent.models.get(), []);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
 
 	test('applies native bypass before a prompt and restores the previous mode when switched back', async () => {
 		const { f, configured } = approvalFixture();
