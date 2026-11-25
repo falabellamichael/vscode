@@ -256,6 +256,8 @@ export class CodeApplication extends Disposable {
 			isMainFrame && requestingUrl === 'about:blank' && !!(webContents && this.auxiliaryWindowsMainService?.getWindowByWebContents(webContents));
 		const isRequestFromWindow = (webContents: Electron.WebContents | null, requestingUrl: string | undefined, isMainFrame: boolean) =>
 			isUrlFromWindow(requestingUrl) || isUrlFromAuxiliaryWindow(webContents, requestingUrl, isMainFrame);
+		const isWindowManagedFullscreen = (webContents: Electron.WebContents | null, permission: string) =>
+			permission === 'fullscreen' && !!webContents && !!this.windowsMainService?.getWindowByWebContents(webContents);
 
 		const alwaysAllowedPermissions = new Set(['pointerLock', 'notifications']);
 
@@ -279,7 +281,7 @@ export class CodeApplication extends Disposable {
 
 		session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
 			if (isUrlFromWebview(details.requestingUrl)) {
-				return callback(allowedPermissionsInWebview.has(permission));
+				return callback(allowedPermissionsInWebview.has(permission) || isWindowManagedFullscreen(webContents, permission));
 			}
 			if (isRequestFromWindow(webContents, details.requestingUrl, details.isMainFrame)) {
 				return callback(allowedPermissionsInCore.has(permission));
@@ -289,7 +291,7 @@ export class CodeApplication extends Disposable {
 
 		session.defaultSession.setPermissionCheckHandler((webContents, permission, _origin, details) => {
 			if (isUrlFromWebview(details.requestingUrl)) {
-				return allowedPermissionsInWebview.has(permission);
+				return allowedPermissionsInWebview.has(permission) || isWindowManagedFullscreen(webContents, permission);
 			}
 			if (isRequestFromWindow(webContents, details.requestingUrl, details.isMainFrame)) {
 				return allowedPermissionsInCore.has(permission);

@@ -1982,7 +1982,7 @@ class AssistantView extends AbstractCustomView {
 					submitOverride: submit,
 					sendRequest: async () => false,
 				}));
-				composer.render(composerHost, chat, controls);
+				composer.render(composerHost, chat, undefined, controls);
 				this._register(composer.onDidChangeInput(() => {
 					if (!settingInput) { saveDraft.schedule(); }
 					updateCounter();

@@ -10,6 +10,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/comm
 import { INativeHostService } from '../../../platform/native/common/native.js';
 import { IOpenedMainWindow, IOpenEmptyWindowOptions, IOpenWindowOptions, IWindowOpenable, isFolderToOpen } from '../../../platform/window/common/window.js';
 import { constObservable, observableValue } from '../../../base/common/observable.js';
+import { hasKey } from '../../../base/common/types.js';
 import { URI } from '../../../base/common/uri.js';
 import { OpenSessionInVSCodeAction, openSessionInVSCode, returnToVSCodeEditor, shouldShowReturnToVSCodeEditor } from '../../electron-browser/actions/vscodeActions.js';
 import { getChatSessionToOpenInEditor } from '../../../workbench/contrib/sessions/browser/openInVSCodeUtils.js';
@@ -561,8 +562,9 @@ suite('VS Code Actions', () => {
 		[{ type: RemoteAgentHostEntryType.Tunnel, tunnelId: 'host', clusterId: 'region' }, 'editor', undefined],
 		[{ type: RemoteAgentHostEntryType.WSL, address: 'wsl:Ubuntu', distro: 'Ubuntu' }, undefined, undefined],
 		[{ type: RemoteAgentHostEntryType.DevContainer, address: 'devcontainer:host', hostPath: '/source/project' }, undefined, undefined],
+		[{ type: RemoteAgentHostEntryType.DevContainer, address: 'devcontainer:environment', environmentId: 'environment', volume: { volumeName: 'ubuntu', folder: 'ubuntu' }, hostAuthority: 'ssh-remote+build' }, undefined, undefined],
 	] satisfies [IRemoteAgentHostEntry['connection'], TunnelGatewayServerType | undefined, RemoteAgentHostLocationPreference | undefined][]) {
-		test(`preserves supported ${connection.type} workspace and hands off chats from shared hosts (${selectedServerType ?? 'unspecified'}, ${preference ?? 'no preference'})`, async () => {
+		test(`preserves supported ${connection.type}${hasKey(connection, { environmentId: true }) ? ' environment' : ''} workspace and hands off chats from shared hosts (${selectedServerType ?? 'unspecified'}, ${preference ?? 'no preference'})`, async () => {
 			const calls: { folders?: { uri: URI; label: string | undefined }[]; options?: IOpenWindowOptions }[] = [];
 			const entry: IRemoteAgentHostEntry = { name: 'Remote host', connection };
 			const address = getEntryAddress(entry);

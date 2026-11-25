@@ -20,6 +20,18 @@
 }
 
 .monaco-workbench .open-in-vscode-titlebar-widget > .open-in-vscode-titlebar-widget-icon {
+	flex: 0 0 auto;
+}
+
+.monaco-workbench .part.titlebar.inactive .open-in-vscode-titlebar-widget {
+	color: var(--vscode-titleBar-inactiveForeground);
+}
+
+.monaco-workbench .part.titlebar > .sessions-titlebar-container > .titlebar-center > .titlebar-actions-container .monaco-action-bar .action-item.open-in-vscode-titlebar-widget > .open-in-vscode-titlebar-widget-icon.codicon {
+	color: inherit;
+}
+
+.monaco-workbench .open-in-vscode-titlebar-widget:not(.codicon-icons) > .open-in-vscode-titlebar-widget-icon {
 	width: 16px;
 	height: 16px;
 	flex: 0 0 auto;
@@ -38,18 +50,18 @@
 	background-image: url('../../../workbench/browser/media/code-icon.svg');
 }
 
-.monaco-enable-motion .monaco-workbench .open-in-vscode-titlebar-widget > .open-in-vscode-titlebar-widget-icon,
-.monaco-workbench.monaco-enable-motion .open-in-vscode-titlebar-widget > .open-in-vscode-titlebar-widget-icon {
+.monaco-enable-motion .monaco-workbench .open-in-vscode-titlebar-widget:not(.codicon-icons) > .open-in-vscode-titlebar-widget-icon,
+.monaco-workbench.monaco-enable-motion .open-in-vscode-titlebar-widget:not(.codicon-icons) > .open-in-vscode-titlebar-widget-icon {
 	transition: filter 160ms ease;
 }
 
-.monaco-reduce-motion .monaco-workbench .open-in-vscode-titlebar-widget > .open-in-vscode-titlebar-widget-icon,
-.monaco-workbench.monaco-reduce-motion .open-in-vscode-titlebar-widget > .open-in-vscode-titlebar-widget-icon {
+.monaco-reduce-motion .monaco-workbench .open-in-vscode-titlebar-widget:not(.codicon-icons) > .open-in-vscode-titlebar-widget-icon,
+.monaco-workbench.monaco-reduce-motion .open-in-vscode-titlebar-widget:not(.codicon-icons) > .open-in-vscode-titlebar-widget-icon {
 	transition-duration: 0ms !important;
 }
 
-.monaco-workbench .open-in-vscode-titlebar-widget:is(:hover, .hovered) > .open-in-vscode-titlebar-widget-icon,
-.monaco-workbench .open-in-vscode-titlebar-widget:focus-visible > .open-in-vscode-titlebar-widget-icon {
+.monaco-workbench .open-in-vscode-titlebar-widget:not(.codicon-icons):is(:hover, .hovered) > .open-in-vscode-titlebar-widget-icon,
+.monaco-workbench .open-in-vscode-titlebar-widget:not(.codicon-icons):focus-visible > .open-in-vscode-titlebar-widget-icon {
 	filter: none;
 }
 

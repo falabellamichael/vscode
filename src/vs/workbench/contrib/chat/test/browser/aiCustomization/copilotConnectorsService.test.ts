@@ -10,33 +10,33 @@ import { CancellationToken, CancellationTokenSource } from '../../../../../../ba
 import { IDefaultAccount } from '../../../../../../base/common/defaultAccount.js';
 import { CancellationError, isCancellationError } from '../../../../../../base/common/errors.js';
 import { Emitter } from '../../../../../../base/common/event.js';
-import { DisposableStore, toDisposable } from '../../../../../../base/common/lifecycle.js';
+import { toDisposable } from '../../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { mock } from '../../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
 import { runWithFakedTimers } from '../../../../../../base/test/common/virtualScheduling/index.js';
-import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IAgentHostService } from '../../../../../../platform/agentHost/common/agentService.js';
 import { IConfigurationChangeEvent } from '../../../../../../platform/configuration/common/configuration.js';
-import { AccountClient } from '../../../../../../platform/github/common/account/accountClient.js';
-import { IGitHubAccountClient } from '../../../../../../platform/github/common/account/account.js';
+import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { CustomizationMarketplaceMediaType } from '../../../../../../platform/customizationMarketplace/common/customizationMarketplaceService.js';
 import { IApiRequestProvider } from '../../../../../../platform/github/common/client/request.js';
-import { GitHubService } from '../../../../../../platform/github/common/githubService.js';
-import { GitHubAuthorizationContext, GitHubCredentialChange, GitHubRequestError } from '../../../../../../platform/github/common/githubTypes.js';
-import { ConnectorCatalog, ConnectorPlugin } from '../../../../../../platform/github/common/connectors/connectors.js';
-import { createConnectorPlugin } from '../../../../../../platform/github/test/common/connectorsFixtures.js';
 import { CustomizationMarketplaceConfiguration } from '../../../../../../platform/customizationMarketplace/common/customizationMarketplaceSources.js';
 import { IDefaultAccountService } from '../../../../../../platform/defaultAccount/common/defaultAccount.js';
+import { IGitHubAccountClient } from '../../../../../../platform/github/common/account/account.js';
+import { AccountClient } from '../../../../../../platform/github/common/account/accountClient.js';
+import { ConnectorCatalog, ConnectorPlugin } from '../../../../../../platform/github/common/connectors/connectors.js';
+import { GitHubService } from '../../../../../../platform/github/common/githubService.js';
+import { GitHubAuthorizationContext, GitHubCredentialChange, GitHubRequestError } from '../../../../../../platform/github/common/githubTypes.js';
+import { createConnectorPlugin } from '../../../../../../platform/github/test/common/connectorsFixtures.js';
 import { NullLogService } from '../../../../../../platform/log/common/log.js';
 import { IOpenerService } from '../../../../../../platform/opener/common/opener.js';
 import product from '../../../../../../platform/product/common/product.js';
 import { IProductService } from '../../../../../../platform/product/common/productService.js';
 import { NullTelemetryService } from '../../../../../../platform/telemetry/common/telemetryUtils.js';
+import { TestDataTelemetryService } from '../../../../../../platform/telemetry/test/common/testTelemetryService.js';
 import { AuthenticationSession, AuthenticationSessionsChangeEvent, IAuthenticationService } from '../../../../../services/authentication/common/authentication.js';
 import { IWorkbenchGitHubService, toGitHubAuthorizationContext } from '../../../../../services/github/common/githubService.js';
 import { CopilotConnectorsMarketplaceProvider, CopilotConnectorsService } from '../../../browser/aiCustomization/copilotConnectorsService.js';
-import { CustomizationMarketplaceMediaType } from '../../../../../../platform/customizationMarketplace/common/customizationMarketplaceService.js';
-import { TestDataTelemetryService } from '../../../../../../platform/telemetry/test/common/testTelemetryService.js';
 
 function catalogResponse(
 	status: ConnectorPlugin['connection']['status'],
@@ -71,7 +71,6 @@ suite('CopilotConnectorsService', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	function createFixture(responses: Array<{ readonly status?: number; readonly body?: unknown; readonly ready?: Promise<void> | (() => Promise<void>); readonly headers?: Record<string, string> }>, enabled = true, enterprise = false) {
-		const requestLifetime = store.add(new DisposableStore());
 		const requests: Array<{ readonly type: string | undefined; readonly url: string; readonly data: string | undefined }> = [];
 		const requestSpies = new Map<IApiRequestProvider, SinonSpy<Parameters<IApiRequestProvider['request']>, ReturnType<IApiRequestProvider['request']>>>();
 		const requestTokens: CancellationToken[] = [];
@@ -164,14 +163,14 @@ suite('CopilotConnectorsService', () => {
 		const invalidatedGrants = store.add(new Emitter<GitHubCredentialChange>());
 		const engine = store.add(new GitHubService({
 			connectorsApiBaseUri: productService.defaultChatAgent.mcpConnectorsUrl,
-			fetch: async (input, options) => {
+			fetch: async (input, options, fetchToken) => {
 				const url = String(input);
 				if (url === 'https://api.github.com/user') {
 					return Response.json({ id: 101 });
 				}
-				assert.ok(options?.signal);
+				assert.ok(options);
 				requests.push({ type: options.method, url, data: typeof options.body === 'string' ? options.body : undefined });
-				requestTokens.push(CancellationToken.fromAbortSignal(options.signal, requestLifetime));
+				requestTokens.push(fetchToken);
 				authorizationHeaders.push(new Headers(options.headers).get('Authorization') ?? undefined);
 				validators.push(new Headers(options.headers).get('If-None-Match'));
 				const response = responses.shift() ?? {};
@@ -189,9 +188,9 @@ suite('CopilotConnectorsService', () => {
 		const gitHubService = new class extends mock<IWorkbenchGitHubService>() {
 			override async acquireAccountApiClient(...args: Parameters<IWorkbenchGitHubService['acquireAccountApiClient']>): Promise<IGitHubAccountClient> {
 				assert.ok(args.length === 3);
-				const [providerId, session, signal] = args;
+				const [providerId, session, cancellationToken] = args;
 				const authorization = toGitHubAuthorizationContext(providerId, session);
-				signal.throwIfAborted();
+				CancellationToken.throwIfCanceled(cancellationToken);
 				grants.push(authorization);
 				if (!sessions.some(session => session.id === authorization.sessionId && session.account.id === authorization.accountId)) {
 					throw new GitHubRequestError('The selected session is unavailable', 'authentication');
@@ -336,12 +335,12 @@ suite('CopilotConnectorsService', () => {
 	test('bounds a stalled acquisition and disposes a client that arrives after timeout', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 		const fixture = createFixture([]);
 		const pending = new DeferredPromise<IGitHubAccountClient>();
-		const started = new DeferredPromise<{ providerId: string; session: AuthenticationSession; signal: AbortSignal }>();
+		const started = new DeferredPromise<{ providerId: string; session: AuthenticationSession; cancellationToken: CancellationToken }>();
 		const acquire = fixture.gitHubService.acquireAccountApiClient;
 		fixture.gitHubService.acquireAccountApiClient = async (...args) => {
 			assert.ok(args.length === 3);
-			const [providerId, session, signal] = args;
-			void started.complete({ providerId, session, signal });
+			const [providerId, session, cancellationToken] = args;
+			void started.complete({ providerId, session, cancellationToken });
 			return pending.p;
 		};
 		const start = Date.now();
@@ -349,10 +348,10 @@ suite('CopilotConnectorsService', () => {
 		const request = await started.p;
 		await rejected;
 		const elapsed = Date.now() - start;
-		const late = await acquire(request.providerId, request.session, new AbortController().signal);
+		const late = await acquire(request.providerId, request.session, CancellationToken.None);
 		await pending.complete(late);
 		await timeout(0);
-		assert.deepStrictEqual({ elapsed, aborted: request.signal.aborted, requests: fixture.requests, leases: fixture.leases }, {
+		assert.deepStrictEqual({ elapsed, aborted: request.cancellationToken.isCancellationRequested, requests: fixture.requests, leases: fixture.leases }, {
 			elapsed: 30_000, aborted: true, requests: [], leases: { acquired: 1, released: 1 },
 		});
 	}));
@@ -383,12 +382,63 @@ suite('CopilotConnectorsService', () => {
 			hasCursor: typeof first.nextCursor === 'string',
 			requests: fixture.requests.map(request => request.url),
 		}, {
-			first: [{ identifier: 'mail', installation: { kind: 'copilotConnector', name: 'mail' }, publisher: 'GitHub Copilot', publisherUrl: 'https://github.com/features/copilot' }],
+			first: [{ identifier: 'mail', installation: { kind: 'copilotConnector', name: 'mail' }, publisher: 'GitHub Copilot', publisherUrl: undefined }],
 			second: ['calendar'],
 			total: 2,
 			hasCursor: true,
 			requests: ['https://api.github.test/copilot-connectors/api/v1/plugins'],
 		});
+	});
+
+	test('projects validated connector homepages separately from their author and source', async () => {
+		const fixture = createFixture([{
+			body: {
+				plugins: [
+					createConnectorPlugin({
+						name: 'amplitude',
+						homepage: 'https://amplitude.com',
+						author: { name: 'GitHub', url: 'https://github.com' },
+						repository: 'https://github.com/amplitude/connector',
+						metadata: { displayName: 'Amplitude' },
+					}),
+					createConnectorPlugin({
+						name: 'github-homepage',
+						homepage: 'https://github.com/example/connector',
+					}),
+					createConnectorPlugin({
+						name: 'encoded-homepage',
+						homepage: 'https://example.com/a%2Fb?query=x%26y',
+					}),
+					createConnectorPlugin({
+						name: 'missing-homepage',
+						author: { name: 'GitHub', url: 'https://github.com' },
+						repository: 'https://github.com/example/connector',
+					}),
+					createConnectorPlugin({
+						name: 'invalid-homepage',
+						homepage: 'javascript:alert(1)',
+					}),
+				],
+			},
+		}]);
+		const source = new CopilotConnectorsMarketplaceProvider(fixture.service, fixture.configurationService);
+		const page = await source.query({}, CancellationToken.None);
+
+		const sourceUrl = 'https://docs.github.com/en/copilot/concepts/customizations/copilot-connectors';
+		assert.deepStrictEqual(page.items.map(item => ({
+			identifier: item.identifier,
+			homepage: item.homepage,
+			publisher: item.publisher,
+			publisherUrl: item.publisherUrl?.toString(),
+			sourceUrl: item.url?.toString(),
+			externalUrl: item.externalUrl,
+		})), [
+			{ identifier: 'amplitude', homepage: 'https://amplitude.com', publisher: 'GitHub', publisherUrl: 'https://github.com/', sourceUrl, externalUrl: sourceUrl },
+			{ identifier: 'github-homepage', homepage: 'https://github.com/example/connector', publisher: 'GitHub Copilot', publisherUrl: undefined, sourceUrl, externalUrl: sourceUrl },
+			{ identifier: 'encoded-homepage', homepage: 'https://example.com/a%2Fb?query=x%26y', publisher: 'GitHub Copilot', publisherUrl: undefined, sourceUrl, externalUrl: sourceUrl },
+			{ identifier: 'missing-homepage', homepage: undefined, publisher: 'GitHub', publisherUrl: 'https://github.com/', sourceUrl, externalUrl: sourceUrl },
+			{ identifier: 'invalid-homepage', homepage: undefined, publisher: 'GitHub Copilot', publisherUrl: undefined, sourceUrl, externalUrl: sourceUrl },
+		]);
 	});
 
 	test('projects top-level service metadata and public endpoints', async () => {
@@ -418,7 +468,7 @@ suite('CopilotConnectorsService', () => {
 			marketplaceIcon: URI.isUri(marketplaceIcon) ? marketplaceIcon.toString() : undefined,
 			description: connector.description,
 			version: connector.version,
-			homepage: connector.homepage?.toString(),
+			homepage: connector.homepage,
 			documentation: connector.documentation?.toString(),
 			repository: connector.repository?.toString(),
 			license: connector.license,
@@ -645,6 +695,24 @@ suite('CopilotConnectorsService', () => {
 			consent: fixture.consentCalls,
 			requests: fixture.requests,
 		}, { authorizationRequired: true, signIn: [], consent: [], requests: [] });
+	});
+
+	test('a Microsoft default account is treated as signed out and never as a GitHub account', async () => {
+		const fixture = createFixture([]);
+		fixture.setAccount({
+			authenticationProvider: { id: 'microsoft', name: 'Microsoft', enterprise: false },
+			accountName: 'alice',
+			sessionId: 's1',
+			enterprise: false,
+		});
+		const source = new CopilotConnectorsMarketplaceProvider(fixture.service, fixture.configurationService);
+		await assert.rejects(source.query({}, CancellationToken.None), /Sign in to view connectors/);
+		assert.deepStrictEqual({
+			account: fixture.service.account,
+			signIn: fixture.signInCalls,
+			consent: fixture.consentCalls,
+			requests: fixture.requests,
+		}, { account: undefined, signIn: [], consent: [], requests: [] });
 	});
 
 	test('signing in to browse requests only ordinary GitHub scopes and exposes catalog status', async () => {

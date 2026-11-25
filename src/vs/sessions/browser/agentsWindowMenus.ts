@@ -44,6 +44,14 @@ export const AgentsWindowMenus = {
 	CustomViewAutomations: new MenuId('SessionsCustomViewAutomations'),
 	/** Header actions of the Assistant custom view. */
 	CustomViewAssistant: new MenuId('SessionsCustomViewAssistant'),
+	AutomationsMoreActions: new MenuId('SessionsAutomationsMoreActions'),
+	/** Presentation menus owned by the alternative Automations modal. */
+	AutomationsModalToolbar: new MenuId('SessionsAutomationsModalToolbar'),
+	AutomationsModalCreate: new MenuId('SessionsAutomationsModalCreate'),
+	AutomationsModalViewOptions: new MenuId('SessionsAutomationsModalViewOptions'),
+	AutomationsModalRowContext: new MenuId('SessionsAutomationsModalRowContext'),
+	AutomationsModalHistoryItem: new MenuId('SessionsAutomationsModalHistoryItem'),
+	AutomationsModalHistoryContext: new MenuId('SessionsAutomationsModalHistoryContext'),
 	/** Header actions of the pinned canvas page. */
 	CustomViewCanvas: new MenuId('SessionsCustomViewCanvas'),
 	/** Context menu actions for an Automation definition card. */
@@ -63,6 +71,8 @@ export const AgentsWindowMenus = {
 	 */
 	SessionsEmptyEditorGroupAddTab: new MenuId('SessionsEmptyEditorGroupAddTab'),
 	SessionActivityBarCanvas: new MenuId('SessionActivityBarCanvas'),
+	/** The side chats of the active chat, a submenu of the Session Activity Bar while it has more than one. */
+	SessionActivityBarSideChats: new MenuId('SessionActivityBarSideChats'),
 } as const;
 
 /**

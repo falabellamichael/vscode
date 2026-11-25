@@ -79,6 +79,8 @@ export interface INewSessionTargetLabels {
 
 export interface INewSessionComposer {
 	readonly inputUri?: URI;
+	/** Selects the environment of the given provider without submitting a request. */
+	readonly selectEnvironment?: (providerId: string) => Promise<void>;
 	readonly sessionResource?: IObservable<URI | undefined>;
 	readonly modelPicker?: INewSessionComposerPicker;
 	readonly targetLabels?: IObservable<INewSessionTargetLabels>;

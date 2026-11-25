@@ -16,6 +16,9 @@ import { KeybindingsRegistry, KeybindingWeight } from '../../../../platform/keyb
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { AICustomizationManagementEditor } from '../../../../workbench/contrib/chat/browser/aiCustomization/aiCustomizationManagementEditor.js';
 import { AICustomizationManagementEditorInput } from '../../../../workbench/contrib/chat/browser/aiCustomization/aiCustomizationManagementEditorInput.js';
+import { assertAICustomizationManagementSupported } from '../../../../workbench/contrib/chat/browser/aiCustomization/aiCustomizationManagement.js';
+import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { IsPhoneLayoutContext } from '../../../../workbench/contrib/sessions/common/contextkeys.js';
 import { IAICustomizationItemsModel } from '../../../../workbench/contrib/chat/browser/aiCustomization/aiCustomizationItemsModel.js';
 import { ILanguageModelToolsService } from '../../../../workbench/contrib/chat/common/tools/languageModelToolsService.js';
 import { IAgentHostToolSetEnablementService, isCopilotCliSessionType } from '../../../../workbench/contrib/chat/browser/agentSessions/agentHost/agentHostToolSetEnablementService.js';
@@ -70,8 +73,8 @@ function customizationSectionVisibleKey(section: string): string {
 function customizationItemWhen(config: ICustomizationItemConfig, section: string): ContextKeyExpression | undefined {
 	const sectionVisibleWhen = ContextKeyExpr.has(customizationSectionVisibleKey(section));
 	return config.when
-		? ContextKeyExpr.and(CustomizationsEnabledContext, sectionVisibleWhen, config.when)
-		: ContextKeyExpr.and(CustomizationsEnabledContext, sectionVisibleWhen);
+		? ContextKeyExpr.and(CustomizationsEnabledContext, IsPhoneLayoutContext.negate(), sectionVisibleWhen, config.when)
+		: ContextKeyExpr.and(CustomizationsEnabledContext, IsPhoneLayoutContext.negate(), sectionVisibleWhen);
 }
 
 const CUSTOMIZATION_OVERVIEW_ITEM: ICustomizationItemConfig = {
@@ -378,11 +381,13 @@ export class CustomizationsToolbarContribution extends Disposable implements IWo
 				super({
 					id: openCustomizations,
 					title: localize2('customizationsEntryPoint', "Customizations"),
-					precondition: CustomizationsEnabledContext,
+					precondition: ContextKeyExpr.and(CustomizationsEnabledContext, IsPhoneLayoutContext.negate()),
 					f1: true,
 				});
 			}
 			async run(accessor: ServicesAccessor, context?: unknown): Promise<void> {
+				const layoutService = accessor.get(IWorkbenchLayoutService);
+				assertAICustomizationManagementSupported(layoutService);
 				const hostService = accessor.get(IFocusedSessionHostService);
 				const editorService = accessor.get(IEditorService);
 				const harnessService = accessor.get(ICustomizationHarnessService);
@@ -394,13 +399,14 @@ export class CustomizationsToolbarContribution extends Disposable implements IWo
 				const target = sessionsService.getSession(resource) ?? sessionsService.getSessionForChatResource(resource)?.session;
 				const ignored = getIgnoredCustomizationMigrationGroups(accessor.get(IStorageService), getChatSessionType(resource), hover.getProjectRoot(resource));
 				const hint = await accessor.get(ICustomizationMigrationService).computeMigrationHint(resource, CancellationToken.None, ignored);
+				assertAICustomizationManagementSupported(layoutService);
 				await openCustomizationOverviewPage(editorService, harnessService, hostService, workspaceService, { migration: !!hint }, target, explicitResource);
 			}
 		}));
 		for (const menu of [Menus.SessionBarToolbar, Menus.NewSessionGlobalToolbar, Menus.SidebarCustomizationsEntryPoint, MenuId.ChatExecute]) {
 			const sidebar = menu === Menus.SidebarCustomizationsEntryPoint;
 			const input = menu === MenuId.ChatExecute;
-			const when = ContextKeyExpr.and(CustomizationsEnabledContext, ChatCustomizationsLocationContext.isEqualTo(input ? 'chatInput' : sidebar ? 'sidebar' : 'chatToolbar'));
+			const when = ContextKeyExpr.and(CustomizationsEnabledContext, IsPhoneLayoutContext.negate(), ChatCustomizationsLocationContext.isEqualTo(input ? 'chatInput' : sidebar ? 'sidebar' : 'chatToolbar'));
 			this._register(MenuRegistry.appendMenuItem(menu, {
 				command: {
 					id: openCustomizations,
@@ -520,16 +526,17 @@ export class CustomizationsToolbarContribution extends Disposable implements IWo
 				super({
 					id: CUSTOMIZATION_OVERVIEW_ITEM.id,
 					title: CUSTOMIZATION_OVERVIEW_ITEM.label,
-					precondition: CustomizationsEnabledContext,
+					precondition: ContextKeyExpr.and(CustomizationsEnabledContext, IsPhoneLayoutContext.negate()),
 					menu: {
 						id: Menus.SidebarCustomizations,
 						group: 'navigation',
 						order: 0,
-						when: CustomizationsEnabledContext,
+						when: ContextKeyExpr.and(CustomizationsEnabledContext, IsPhoneLayoutContext.negate()),
 					}
 				});
 			}
 			async run(accessor: ServicesAccessor, options?: IOpenAICustomizationsCommandOptions): Promise<void> {
+				assertAICustomizationManagementSupported(accessor.get(IWorkbenchLayoutService));
 				await openCustomizationOverviewPage(
 					accessor.get(IEditorService),
 					accessor.get(ICustomizationHarnessService),
@@ -573,10 +580,12 @@ export class CustomizationsToolbarContribution extends Disposable implements IWo
 					} : {
 						id: config.id,
 						title: config.label,
+						precondition: combinedWhen,
 						menu,
 					});
 				}
 				async run(accessor: ServicesAccessor): Promise<void> {
+					assertAICustomizationManagementSupported(accessor.get(IWorkbenchLayoutService));
 					const editorService = accessor.get(IEditorService);
 					const harnessService = accessor.get(ICustomizationHarnessService);
 					await openCustomizationSectionPage(editorService, harnessService, accessor.get(IFocusedSessionHostService), accessor.get(IAICustomizationWorkspaceService), section);

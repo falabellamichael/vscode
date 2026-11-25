@@ -49,6 +49,7 @@ import { IChatService } from '../common/chatService/chatService.js';
 import { ChatModeKind, OPEN_AGENTS_WINDOW_PRECONDITION, OPEN_WORKSPACE_IN_AGENTS_WINDOW_COMMAND_ID } from '../common/constants.js';
 import { IPluginGitService } from '../common/plugins/pluginGitService.js';
 import { registerChatDeveloperActions } from './actions/chatDeveloperActions.js';
+import { OpenModelRoutersFolderAction } from './actions/openModelRoutersFolderAction.js';
 import { registerChatExportZipAction } from './actions/chatExportZip.js';
 import { registerExportAgentTracesDbAction } from './actions/exportAgentTracesDb.js';
 import { registerInstallDictationModelAction } from './actions/installDictationModelAction.js';
@@ -275,6 +276,7 @@ registerAction2(StopReadChatItemAloud);
 registerAction2(StopReadAloud);
 
 registerChatDeveloperActions();
+registerAction2(OpenModelRoutersFolderAction);
 registerChatExportZipAction();
 registerExportAgentTracesDbAction();
 registerInstallDictationModelAction();
