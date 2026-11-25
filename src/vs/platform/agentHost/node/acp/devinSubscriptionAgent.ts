@@ -257,11 +257,14 @@ export class DevinSubscriptionAgent extends Disposable implements IAgent {
 		const revision = this.authRevision;
 		if (!token) { return; }
 		const environment = devinSubscriptionEnvironment(token, process.env);
-		const value = this.adapter ? await this.adapter.listModels(environment) : JSON.parse(await new Promise<string>((resolve, reject) => {
+		const value = this.adapter ? await this.adapter.listModels(environment) : await new Promise<unknown>((resolve, reject) => {
 			execFile(this.executable, ['models', 'list', '--format', 'json'], { env: environment, windowsHide: true, timeout: 20_000, maxBuffer: 4 * 1024 * 1024 }, (error, output) => {
-				if (error) { reject(new Error(localize('devin.catalogFailed', "Could not load the Devin model catalog. Check the configured Devin executable and your account access."))); } else { resolve(output); }
+				const failed = () => reject(new Error(localize('devin.catalogFailed', "Could not load the Devin model catalog. Check the configured Devin executable and your account access.")));
+				if (error) { failed(); return; }
+				// Login prompts, update notices or a truncated write must not surface as a raw JSON syntax error.
+				try { resolve(JSON.parse(output)); } catch { failed(); }
 			});
-		}));
+		});
 		const models = parseDevinModels(value);
 		if (!models.length) { throw new Error('Devin returned an empty model catalog.'); }
 		if (revision === this.authRevision) { this.catalogIds = new Set(models.map(model => model.id)); this.models.set(models, undefined); }
