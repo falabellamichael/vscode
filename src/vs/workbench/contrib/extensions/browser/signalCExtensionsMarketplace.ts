@@ -223,6 +223,7 @@ export class SignalCExtensionsMarketplace extends Disposable {
 		} finally {
 			update.dispose();
 		}
+		return undefined;
 	}
 
 	private async install(row: IListingRow): Promise<void> {

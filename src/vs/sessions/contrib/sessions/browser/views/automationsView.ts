@@ -1896,6 +1896,7 @@ registerAction2(class MarkAllAutomationRunsReadAction extends Action2 {
 		await markAllAutomationRunsRead(
 			accessor.get(IAutomationService), accessor.get(ISessionsManagementService), accessor.get(IUriIdentityService),
 			accessor.get(IChatService).chatModels.get(), accessor.get(ILogService), accessor.get(IDialogService),
+			accessor.get(IConfigurationService), accessor.get(IStorageService),
 		);
 	}
 });

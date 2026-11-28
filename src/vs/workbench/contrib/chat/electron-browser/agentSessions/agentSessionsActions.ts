@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 import './media/openInAgents.css';
 import { onDidChangeWorkspaceModeSwitch, WorkspaceModeSwitch, WorkspaceModeSwitchGuard, WORKSPACE_MODE_SWITCH_SETTING, WORKSPACE_MODE_SWITCH_KEYBINDING } from '../../../../browser/parts/titlebar/workspaceModeSwitch.js';
-import { $, addDisposableListener, append, EventLike, EventType, getWindow } from '../../../../../base/browser/dom.js';
+import { $, addDisposableListener, append, EventType } from '../../../../../base/browser/dom.js';
 import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { IManagedHover } from '../../../../../base/browser/ui/hover/hover.js';
 import { getDefaultHoverDelegate } from '../../../../../base/browser/ui/hover/hoverDelegateFactory.js';

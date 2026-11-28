@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { IChatRequestVariableEntry } from './attachments/chatVariableEntries.js';
-import { getSessionOutputKindFromMetadata, isSessionOutputKind, SESSION_OUTPUT_TYPE_META_KEY, type SessionOutputKind } from '../../../../platform/agentHost/common/meta/agentSessionOutputMeta.js';
+import { isSessionOutputKind, SESSION_OUTPUT_TYPE_META_KEY, type SessionOutputKind } from '../../../../platform/agentHost/common/meta/agentSessionOutputMeta.js';
 
 export type { SessionOutputKind } from '../../../../platform/agentHost/common/meta/agentSessionOutputMeta.js';
 export { SESSION_OUTPUT_TYPE_META_KEY, isSessionOutputKind, getSessionOutputKindFromMetadata } from '../../../../platform/agentHost/common/meta/agentSessionOutputMeta.js';

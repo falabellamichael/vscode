@@ -6,6 +6,7 @@
 import { append, clearNode, $, EventHelper, EventType, addDisposableListener, isHTMLElement } from '../../../../base/browser/dom.js';
 import { renderMarkdown } from '../../../../base/browser/markdownRenderer.js';
 import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
+import { mainWindow } from '../../../../base/browser/window.js';
 import { Action, Separator } from '../../../../base/common/actions.js';
 import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
@@ -3278,7 +3279,7 @@ registerAction2(class ToggleAssistantBrowserAction extends Action2 {
 	override async run(accessor: ServicesAccessor): Promise<void> {
 		const layout = accessor.get(IWorkbenchLayoutService);
 		const group = accessor.get(IEditorGroupsService).mainPart.activeGroup;
-		if (layout.isVisible(Parts.EDITOR_PART) && group.activeEditor instanceof BrowserEditorInput) {
+		if (layout.isVisible(Parts.EDITOR_PART, mainWindow) && group.activeEditor instanceof BrowserEditorInput) {
 			layout.setPartHidden(true, Parts.EDITOR_PART);
 			layout.focusPart(Parts.CUSTOM_VIEW_GRID_PART);
 			return;

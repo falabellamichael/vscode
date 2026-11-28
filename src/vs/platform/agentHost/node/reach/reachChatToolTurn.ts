@@ -260,7 +260,7 @@ const writeLikeCopilotTools = new Set(['copilot_createFile', 'copilot_applyPatch
 				nextPart(localize('reach.chat.correctingClaim', "That report claimed success before anything was saved. Correcting it now…"));
 				continue;
 			}
-			return outcomes.length ? { ...response, actions: outcomes } : response;
+			return response.kind === 'reply' && outcomes.length ? { ...response, actions: outcomes } : response;
 		}
 		signal.throwIfAborted();
 		nextPart(response.text);

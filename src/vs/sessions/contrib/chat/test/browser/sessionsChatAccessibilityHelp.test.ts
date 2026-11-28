@@ -38,7 +38,7 @@ import { ITelemetryService } from '../../../../../platform/telemetry/common/tele
 import { TestExperimentTriggerTelemetryService } from '../../../../../platform/telemetry/test/common/experimentTriggerTestUtils.js';
 import { SessionComparisonAccessibleView, SessionsChatAccessibilityHelp } from '../../browser/sessionsChatAccessibilityHelp.js';
 import { SESSIONS_LIST_PROMOTE_NEW_CHAT_ACTION_DEFAULT, SessionsListPromoteNewChatActionContext } from '../../../../../workbench/contrib/sessions/common/contextkeys.js';
-import { SESSION_ACTIVITY_BAR_SETTING, SESSIONS_CHAT_TABS_SETTING, SESSIONS_SEND_LATER_ENABLED_SETTING, SessionsChatTabsMode } from '../../../../../workbench/contrib/sessions/common/sessionConfig.js';
+import { SESSION_ACTIVITY_BAR_SETTING, SESSIONS_CHAT_TABS_SETTING, SESSIONS_SEND_LATER_ENABLED_SETTING, SESSIONS_SIDEBAR_CUSTOMIZATIONS_CATEGORIES_SETTING, SessionsChatTabsMode } from '../../../../../workbench/contrib/sessions/common/sessionConfig.js';
 import { IAgentWorkbenchLayoutService } from '../../../../browser/workbench.js';
 import { AgentWorkbenchLayout, ISessionsHostLayoutService } from '../../../../../workbench/services/sessions/browser/sessionsHostLayoutService.js';
 import { CHAT_WINDOWS_ENABLED_SETTING } from '../../../chatWindow/common/chatWindows.js';
@@ -116,6 +116,7 @@ suite('SessionsChatAccessibilityHelp', () => {
 			const help = getHelp(new TestConfigurationService({
 				'chat.disableAIFeatures': disabled,
 				[ChatConfiguration.HtmlPreviewEnabled]: html,
+				[ChatConfiguration.ThinkingGenerateTitles]: false,
 			}), false, hidden);
 			return {
 				viewMode: help.includes('View Mode to select Compact, Verbose, or Conversation'),
@@ -295,7 +296,7 @@ suite('SessionsChatAccessibilityHelp', () => {
 	]) {
 		test(`documents View Mode only when AI is visible (disabled: ${aiDisabled}, hidden: ${hidden}, HTML: ${htmlEnabled})`, () => {
 			const instantiation = store.add(new TestInstantiationService());
-			const configuration = new TestConfigurationService({ 'chat.disableAIFeatures': aiDisabled, [ChatConfiguration.HtmlPreviewEnabled]: htmlEnabled });
+			const configuration = new TestConfigurationService({ 'chat.disableAIFeatures': aiDisabled, [ChatConfiguration.HtmlPreviewEnabled]: htmlEnabled, [ChatConfiguration.ThinkingGenerateTitles]: true });
 			store.add(configuration.onDidChangeConfigurationEmitter);
 			instantiation.stub(IConfigurationService, configuration);
 			stubContextKeyService(instantiation, configuration);

@@ -549,7 +549,7 @@ export class AgentHostActiveClientService extends Disposable implements IAgentHo
 						}
 					}
 					return tools.filter(tool => available.has(tool.id)).map(tool => ({
-						...toolDataToDefinition(tool, getAgentFileToolReferenceName(tool, this._toolsService)),
+						...toolDataToDefinition(tool, getAgentFileToolReferenceName(tool)),
 						name: tool.id,
 					}));
 				}

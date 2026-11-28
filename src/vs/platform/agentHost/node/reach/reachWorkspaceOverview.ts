@@ -110,4 +110,3 @@ export async function readReachWorkspaceOverview(roots: readonly URI[], signal: 
 	}
 	return localize('reach.workspace.overview', "Workspace overview") + '\n\n' + sections.join('\n\n');
 }
-

@@ -80,7 +80,7 @@ export function getSideChatsInSidePaneAccessibilityHelp(): string {
 }
 
 export function getChatViewModeAccessibilityHelp(): string {
-	return localize('chat.viewMode.help', "Open the chat menu and choose View Mode to select Compact, Verbose, or Conversation. The active mode is checked. Press Right Arrow to open the submenu, Up or Down Arrow to choose a mode, Enter to apply it, and Left Arrow or Escape to go back.");
+	return localize('chat.viewMode.help', "Open the chat menu and choose View Mode to select Compact, Verbose, or Conversation. The active mode is checked. Press Right Arrow to open the submenu, Up or Down Arrow to choose a mode, Enter to apply it, and Left Arrow or Escape to go back. Selecting a mode updates {0}.", ChatConfiguration.PersistentProgressVerbosity);
 }
 
 export function getChatThinkingAccessibilityHelp(): string {

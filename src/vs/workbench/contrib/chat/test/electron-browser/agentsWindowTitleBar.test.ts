@@ -97,10 +97,7 @@ suite('Agents Window titlebar copy experiment', () => {
 		const configuration = iconConfiguration ?? new TestConfigurationService({
 			[AGENTS_WINDOW_TITLE_BAR_ICONS_SETTING]: true,
 			'workbench.titleBar.workspaceModeSwitch': false,
-			...(richHover === undefined ? {} : { [ChatConfiguration.TitleBarOpenInAgentsWindowRichHover]: richHover }),
-			...(richHoverOnClick === undefined ? {} : { [ChatConfiguration.TitleBarOpenInAgentsWindowRichHoverOnClick]: richHoverOnClick }),
 		});
-		const instantHovers: { options: IHoverOptions; focus: boolean | undefined; widget: { isDisposed: boolean; dispose(): void } }[] = [];
 		disposables.add(configuration.onDidChangeConfigurationEmitter);
 		instantiation.stub(IConfigurationService, configuration);
 		instantiation.stub(IStorageService, storage);
@@ -154,7 +151,7 @@ suite('Agents Window titlebar copy experiment', () => {
 						? { ...inspected, userValue: undefined, userLocalValue: undefined }
 						: inspected;
 				}
-			}({ [AGENTS_WINDOW_TITLE_BAR_ICONS_SETTING]: useCodicons });
+			}({ [AGENTS_WINDOW_TITLE_BAR_ICONS_SETTING]: useCodicons, 'workbench.titleBar.workspaceModeSwitch': false });
 			const h = createHarness(undefined, configuration);
 			const icon = h.container.querySelector<HTMLElement>('.open-in-agents-titlebar-widget-icon')!;
 			icon.style.cssText = 'width: 16px; height: 16px';
@@ -187,7 +184,7 @@ suite('Agents Window titlebar copy experiment', () => {
 					const inspected = super.inspect<T>(key);
 					return key === setting && this.usingDefault ? { ...inspected, userValue: undefined, userLocalValue: undefined } : inspected;
 				}
-			}({ [setting]: !useCodicons });
+			}({ [setting]: !useCodicons, 'workbench.titleBar.workspaceModeSwitch': false });
 			const h = createHarness(undefined, configuration);
 			h.container.querySelector<HTMLElement>('.open-in-agents-titlebar-widget-icon')!.style.cssText = 'width: 16px; height: 16px';
 			attach(h.container);
