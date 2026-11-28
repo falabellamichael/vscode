@@ -48,7 +48,7 @@ import { AccessibilityVerbositySettingId } from '../../../accessibility/browser/
 import { SuggestEnabledInput } from '../../../codeEditor/browser/suggestEnabledInput/suggestEnabledInput.js';
 import { IMcpWorkbenchService, McpServerInstallState } from '../../../mcp/common/mcpTypes.js';
 import { McpCommandIds } from '../../../mcp/common/mcpCommandIds.js';
-import { ISignalCAppConnection, matchesSignalCAppConnection, signalCAppConnections, signalCAppConnectionSource, signalCDirectMailConnections } from '../../../mcp/common/signalCAppConnections.js';
+import { getSignalCDirectMailProvider, ISignalCAppConnection, matchesSignalCAppConnection, signalCAppConnections, signalCAppConnectionSource, signalCDirectMailConnections } from '../../../mcp/common/signalCAppConnections.js';
 import { CustomizationMarketplaceInstallationTarget, CustomizationMarketplaceInstallState, ICustomizationMarketplaceInstallationSnapshot, ICustomizationMarketplaceInstallService, IRecordedCustomizationMarketplaceResource, RecordedCustomizationMarketplaceInstallState } from '../../common/customizationMarketplaceInstallService.js';
 import { AICustomizationManagementSection, AICustomizationSources, IWelcomePageFeatures } from '../../common/aiCustomizationWorkspaceService.js';
 import { customizationSearchMatchesAny } from '../../common/aiCustomizationSearch.js';
@@ -537,11 +537,12 @@ function getInstallActionLabel(state: CustomizationMarketplaceInstallState, hasS
 
 function getSignalCApp(resource: ICustomizationMarketplaceResource): ISignalCAppConnection | undefined {
 	if (resource.sourceId !== signalCAppConnectionSource.id) { return undefined; }
-	return resource.identifier === signalCDirectMailConnections.outlook.id ? signalCDirectMailConnections.outlook : signalCAppConnections.find(app => app.id === resource.identifier);
+	const mail = getSignalCDirectMailProvider(resource.identifier);
+	return mail ? signalCDirectMailConnections[mail] : signalCAppConnections.find(app => app.id === resource.identifier);
 }
 
 function getCatalogTypeLabel(resource: ICustomizationMarketplaceResource): string {
-	if (getSignalCApp(resource)?.id === signalCDirectMailConnections.outlook.id) {
+	if (resource.sourceId === signalCAppConnectionSource.id && getSignalCDirectMailProvider(resource.identifier)) {
 		return localize('customizationDiscovery.directAppConnection', "App connection");
 	}
 	const type = getCatalogType(resource);
@@ -2695,11 +2696,7 @@ export class AICustomizationDiscoveryPage extends Disposable implements IAICusto
 			}
 			this.pendingInstalls.add(resourceKey);
 			try {
-				if (app.id === signalCDirectMailConnections.outlook.id) {
-					await this.commandService.executeCommand(McpCommandIds.ConnectApp, undefined, app.id, 'assistant');
-				} else {
-					await this.commandService.executeCommand(McpCommandIds.ConnectApp, undefined, app.id);
-				}
+				await this.commandService.executeCommand(McpCommandIds.ConnectApp, undefined, app.id, 'assistant');
 			} catch (error) {
 				if (!isCancellationError(error)) {
 					this.notificationService.error(error);
@@ -3009,6 +3006,7 @@ export class AICustomizationDiscoveryPage extends Disposable implements IAICusto
 			return localize('customizationDiscovery.collapsedAlternativeAriaLabel', "1 alternative customization, collapsed");
 		}
 		const state = this.getInstallState(entry.resource);
+		const type = getCatalogType(entry.resource);
 		const verified = isVerifiedCopilotConnector(entry.resource) ? localize('customizationDiscovery.verifiedAriaLabel', ", verified by GitHub") : '';
 		return localize('customizationDiscovery.availableMarketplaceAriaLabel', "{0}, {1}, {2}{3}. {4}. {5}", entry.resource.displayName, type ? getTypeLabel(type) : entry.resource.mediaType, this.getMarketplaceResourceLabel(entry.resource), verified, entry.resource.description, state.kind);
 	}

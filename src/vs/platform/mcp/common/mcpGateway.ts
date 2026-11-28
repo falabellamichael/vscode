@@ -19,6 +19,7 @@ export const McpGatewayToolBrokerChannelName = 'mcpGatewayToolBroker';
 export interface IMcpGatewayServerDescriptor {
 	readonly id: string;
 	readonly label: string;
+	readonly requiresExplicitSelection?: true;
 }
 
 /**

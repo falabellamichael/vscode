@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { DeferredPromise, RunOnceScheduler } from '../../../../../../base/common/async.js';
 import type { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { CancellationError } from '../../../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../../../base/common/event.js';
@@ -11,7 +12,8 @@ import { isNumber } from '../../../../../../base/common/types.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { isCI, isMacintosh } from '../../../../../../base/common/platform.js';
 import type { ICommandDetectionCapability } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
-import { ITerminalLogService, type ITerminalLaunchError } from '../../../../../../platform/terminal/common/terminal.js';
+import { PromptInputState } from '../../../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
+import { GeneralShellType, ITerminalLogService, type ITerminalLaunchError } from '../../../../../../platform/terminal/common/terminal.js';
 import type { ITerminalInstance } from '../../../../terminal/browser/terminal.js';
 import { trackIdleOnPrompt, type ITerminalExecuteStrategy, type ITerminalExecuteStrategyResult } from './executeStrategy.js';
 import type { IMarker as IXtermMarker } from '@xterm/xterm';
@@ -74,6 +76,7 @@ export class RichExecuteStrategy extends Disposable implements ITerminalExecuteS
 
 	async execute(commandLine: string, token: CancellationToken, commandId?: string, commandLineForMetadata?: string): Promise<ITerminalExecuteStrategyResult> {
 		const store = new DisposableStore();
+		const inputListener = store.add(new DisposableStore());
 		// Track the store so that if the strategy is disposed while execute()
 		// is still running (e.g. the session is torn down), accumulated
 		// Event.toPromise listeners on shared emitters like onCommandFinished
@@ -176,11 +179,32 @@ export class RichExecuteStrategy extends Disposable implements ITerminalExecuteS
 			this._log(`Executing command line \`${commandLine}\``);
 			markerRecreation.dispose();
 			const forceBracketedPasteMode = isMacintosh || isMultilineCommand(commandLine);
+			// PSReadLine can accept Enter as another input line. In that case the shell never
+			// starts the command and consequently emits no command-finished event.
+			const incomplete = new DeferredPromise<{ type: 'incomplete' }>();
+			if (this._instance.shellType === GeneralShellType.PowerShell) {
+				const input = this._commandDetection.promptInputModel;
+				const submitted = commandLine.replace(/\r\n/g, '\n').trimEnd();
+				const check = inputListener.add(new RunOnceScheduler(() => {
+					const buffer = xterm.raw.buffer.active;
+					const line = buffer.getLine(buffer.baseY + buffer.cursorY)?.translateToString(true);
+					if (!token.isCancellationRequested && input.state === PromptInputState.Input && input.continuationPrompt?.trim()
+						&& line?.trimEnd() === input.continuationPrompt.trimEnd() && !input.suffix.trim()
+						&& /\n[ \t]*$/.test(input.prefix) && input.prefix.trimEnd() === submitted) {
+						void incomplete.complete({ type: 'incomplete' });
+					}
+				}, 750));
+				inputListener.add(input.onDidChangeInput(() => check.schedule()));
+			}
 			this._instance.runCommand(commandLine, true, commandId, forceBracketedPasteMode, commandLineForMetadata);
 
 			// Wait for the terminal to idle
 			this._log('Waiting for done event');
-			const onDoneResult = await Promise.race([onDone, alternateBufferPromise.then(() => ({ type: 'alternateBuffer' } as const))]);
+			const onDoneResult = await Promise.race([onDone, incomplete.p, alternateBufferPromise.then(() => ({ type: 'alternateBuffer' } as const))]);
+			if (onDoneResult && onDoneResult.type === 'incomplete') {
+				await this._instance.sendText('\x03', false);
+				return { output: 'PowerShell is waiting for more input. The submitted command was incomplete and did not execute. Correct its syntax and submit the complete command.', error: 'incompleteCommand' };
+			}
 			if (onDoneResult && onDoneResult.type === 'disposal') {
 				throw new Error('The terminal was closed');
 			}
@@ -255,6 +279,7 @@ export class RichExecuteStrategy extends Disposable implements ITerminalExecuteS
 				exitCode,
 			};
 		} finally {
+			inputListener.dispose();
 			this._executionStores.delete(store);
 		}
 	}

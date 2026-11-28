@@ -12,7 +12,7 @@ import { URI } from '../../../base/common/uri.js';
 import { IEnvironmentMainService } from '../../environment/electron-main/environmentMainService.js';
 import { ILogService } from '../../log/common/log.js';
 import { IProductService } from '../../product/common/productService.js';
-import { IURLService } from '../common/url.js';
+import { IURLService, protocolUrlForLog } from '../common/url.js';
 import { getWindowsProtocolHandlerArguments, SIGNAL_C_PROTOCOL } from '../node/protocolHandlerArguments.js';
 import { IProtocolUrl } from './url.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
@@ -43,7 +43,7 @@ export class ElectronURLListener extends Disposable {
 		super();
 
 		if (initialProtocolUrls) {
-			logService.trace('ElectronURLListener initialUrisToHandle:', initialProtocolUrls.map(url => url.originalUrl));
+			logService.trace('ElectronURLListener initialUrisToHandle:', initialProtocolUrls.map(url => protocolUrlForLog(url.originalUrl)));
 
 			// the initial set of URIs we need to handle once the window is ready
 			this.uris = initialProtocolUrls;
@@ -117,9 +117,9 @@ export class ElectronURLListener extends Disposable {
 		for (const obj of this.uris) {
 			const handled = await this.urlService.open(obj.uri, { originalUrl: obj.originalUrl });
 			if (handled) {
-				this.logService.trace('ElectronURLListener#flush(): URL was handled', obj.originalUrl);
+				this.logService.trace('ElectronURLListener#flush(): URL was handled', protocolUrlForLog(obj.originalUrl));
 			} else {
-				this.logService.trace('ElectronURLListener#flush(): URL was not yet handled', obj.originalUrl);
+				this.logService.trace('ElectronURLListener#flush(): URL was not yet handled', protocolUrlForLog(obj.originalUrl));
 
 				uris.push(obj);
 			}

@@ -40,9 +40,10 @@ import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { defaultCheckboxStyles } from '../../../../platform/theme/browser/defaultStyles.js';
-import { buttonForeground, buttonHoverBackground, editorBackground, textLinkActiveForeground, textLinkForeground } from '../../../../platform/theme/common/colorRegistry.js';
+import { buttonForeground, buttonHoverBackground, textLinkActiveForeground, textLinkForeground } from '../../../../platform/theme/common/colorRegistry.js';
 import { IColorTheme, ICssStyleCollector, IThemeService, registerThemingParticipant } from '../../../../platform/theme/common/themeService.js';
 import { EditorPane } from '../../../browser/parts/editor/editorPane.js';
+import { PANEL_BACKGROUND } from '../../../common/theme.js';
 import { IEditorOpenContext } from '../../../common/editor.js';
 import { ExtensionFeaturesTab } from './extensionFeaturesTab.js';
 import {
@@ -805,6 +806,8 @@ export class ExtensionEditor extends EditorPane {
 
 					/* prevent scroll-to-top button from blocking the body text */
 					body {
+						background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+						color: var(--vscode-foreground);
 						padding-bottom: 75px;
 					}
 
@@ -978,7 +981,7 @@ export class ExtensionEditor extends EditorPane {
 		const dependenciesTree = this.instantiationService.createInstance(ExtensionsTree,
 			new ExtensionData(extension, null, extension => extension.dependencies || [], this.extensionsWorkbenchService), content,
 			{
-				listBackground: editorBackground
+				listBackground: PANEL_BACKGROUND
 			});
 		const depLayout = () => {
 			scrollableContent.scanDomNode();

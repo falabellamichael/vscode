@@ -2,6 +2,7 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IAuthenticationChallenge, IAuthorizationProtectedResourceMetadata, IAuthorizationServerMetadata } from '../../../../base/common/oauth.js';
@@ -14,6 +15,12 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
  * Use this if you don't want the onDidChangeSessions event to fire in the extension host
  */
 export const INTERNAL_AUTH_PROVIDER_PREFIX = '__';
+
+/** Identifies an OAuth bearer token in a recovery request without including the credential. */
+export async function getOAuthTokenFingerprint(accessToken: string): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(accessToken));
+	return encodeBase64(VSBuffer.wrap(new Uint8Array(digest)), false, true);
+}
 
 export function isGoogleWorkspaceOAuth(authorizationServer: URI, metadata: IAuthorizationServerMetadata, resource: URI | undefined): boolean {
 	return authorizationServer.scheme === 'https'
@@ -35,6 +42,7 @@ export const signalCMailOAuth = {
 		token: 'https://oauth2.googleapis.com/token',
 		resource: 'https://gmail.googleapis.com/',
 		scope: 'https://www.googleapis.com/auth/gmail.readonly',
+		sendScope: 'https://www.googleapis.com/auth/gmail.send',
 	},
 	outlook: {
 		issuer: 'https://login.microsoftonline.com/common/v2.0',
@@ -42,6 +50,8 @@ export const signalCMailOAuth = {
 		token: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
 		resource: 'https://graph.microsoft.com/',
 		scope: 'https://graph.microsoft.com/Mail.Read',
+		sendScope: 'https://graph.microsoft.com/Mail.Send',
+		calendarScope: 'https://graph.microsoft.com/Calendars.Read',
 	},
 } as const;
 
@@ -458,6 +468,15 @@ export interface IAuthenticationProviderSessionOptions {
  * so a provider that receives one knows the workbench itself made the request.
  */
 export const WORKBENCH_ONLY_SESSION_OPTION_PREFIX = '_workbench';
+
+/** A resource-bound MCP connection may keep working with a partially granted OAuth session. */
+export const MCP_ACCEPT_PARTIAL_OAUTH_SCOPES = '_workbenchMcpAcceptPartialOAuthScopes';
+
+/** A registered MCP client explicitly selected the Signal-C desktop HTTPS callback. */
+export const MCP_USE_HTTPS_OAUTH_CALLBACK = '_workbenchMcpUseHttpsOAuthCallback';
+
+/** The access token fingerprint of an approved, resource-bound MCP grant to refresh silently. */
+export const MCP_REFRESH_REJECTED_OAUTH_TOKEN = '_workbenchMcpRefreshRejectedOAuthToken';
 
 /** Returns a copy of `options` without the keys reserved for the workbench. */
 export function withoutWorkbenchOnlySessionOptions<T extends object>(options: T): T {

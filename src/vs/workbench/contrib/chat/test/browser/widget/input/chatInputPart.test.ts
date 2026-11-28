@@ -60,7 +60,7 @@ import { LocalChatSessionUri } from '../../../../common/model/chatUri.js';
 import { ChatAttachmentWidgetRegistry, IChatAttachmentWidgetInstance, IChatAttachmentWidgetRegistry, IChatImageAttachmentEditor } from '../../../../browser/attachments/chatAttachmentWidgetRegistry.js';
 import { ChatAttachmentModel } from '../../../../browser/attachments/chatAttachmentModel.js';
 import { ImageAttachmentWidget } from '../../../../browser/attachments/chatAttachmentWidgets.js';
-import { createChatReferenceVariableEntry, IImageVariableEntry } from '../../../../common/attachments/chatVariableEntries.js';
+import { createChatReferenceVariableEntry, IImageVariableEntry, type IChatRequestVariableEntry, type IPromptTextVariableEntry } from '../../../../common/attachments/chatVariableEntries.js';
 import { MockChatModel } from '../../../common/model/mockChatModel.js';
 import { ChatQuestionCarouselData } from '../../../../common/model/chatProgressTypes/chatQuestionCarouselData.js';
 import { ChatPlanReviewData } from '../../../../common/model/chatProgressTypes/chatPlanReviewData.js';
@@ -72,6 +72,8 @@ import { Target } from '../../../../common/promptSyntax/promptTypes.js';
 import '../../../../../../browser/media/style.css';
 import '../../../../browser/widget/media/chat.css';
 import { IChatSessionFileChange2 } from '../../../../../../common/chatSessionFileChange.js';
+import { toSessionOutputPromptEntry } from '../../../../browser/widget/input/sessionOutputTypePicker.js';
+import type { SessionOutputKind } from '../../../../common/sessionOutputType.js';
 
 suite('ChatInputPart', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -201,6 +203,92 @@ suite('ChatInputPart', () => {
 		});
 		input.refreshToolbars();
 		assert.deepStrictEqual(updates, ['input', 'execute', 'secondary', 'layout']);
+	});
+
+	test('hidden send context seeds picker-less inputs and follows the output picker', () => {
+		const website = toSessionOutputPromptEntry('website')!;
+		const makeInput = (inline: boolean) => Object.assign(Object.create(ChatInputPart.prototype), {
+			options: { outputTypePicker: true },
+			inline,
+			_sendContext: [],
+			_outputType: observableValue<SessionOutputKind>('outputType', 'auto'),
+			storageService: { store: () => { } },
+			_syncInputStateToModel: () => { },
+			_onDidChangeDraft: store.add(new Emitter<void>()),
+		}) as ChatInputPart;
+		const setOutputType = Reflect.get(ChatInputPart.prototype, '_setOutputType') as (this: ChatInputPart, kind: SessionOutputKind) => void;
+
+		// Inline request edits have no picker: the seeded hidden context is sent as-is.
+		const inlineInput = makeInput(true);
+		inlineInput.setSendContext([website]);
+		assert.deepStrictEqual(inlineInput.getSendContext().map(entry => entry.id), ['session-output:website']);
+
+		// The main input's picker follows the restored selection and owns the output entry afterwards.
+		const mainInput = makeInput(false);
+		mainInput.setSendContext([website]);
+		assert.deepStrictEqual(mainInput.getSendContext().map(entry => entry.id), ['session-output:website']);
+		setOutputType.call(mainInput, 'slides');
+		assert.deepStrictEqual(mainInput.getSendContext().map(entry => entry.id), ['session-output:slides']);
+		mainInput.setSendContext([]);
+		assert.deepStrictEqual(mainInput.getSendContext(), []);
+	});
+
+	test('a state without send context clears stale hidden entries but keeps the picker', () => {
+		const website = toSessionOutputPromptEntry('website')!;
+		const other: IPromptTextVariableEntry = { kind: 'promptText', id: 'other:note', name: 'note', value: 'note', modelDescription: 'note', automaticallyAdded: true };
+		const input = Object.assign(Object.create(ChatInputPart.prototype), {
+			options: { outputTypePicker: true },
+			inline: false,
+			_sendContext: [website, other],
+			_outputType: observableValue<SessionOutputKind>('outputType', 'slides'),
+			storageService: { store: () => { }, get: () => 'website' },
+			_syncInputStateToModel: () => { },
+			_onDidChangeDraft: store.add(new Emitter<void>()),
+		}) as ChatInputPart;
+		const sync = Reflect.get(ChatInputPart.prototype, '_syncSendContextFromState') as (this: ChatInputPart, sendContext: readonly IChatRequestVariableEntry[] | undefined) => void;
+
+		sync.call(input, undefined);
+		assert.deepStrictEqual(input.getSendContext().map(entry => entry.id), ['session-output:slides']);
+
+		// A state whose send context lacks an output choice falls back to the stored default.
+		sync.call(input, [other]);
+		assert.deepStrictEqual(input.getSendContext().map(entry => entry.id), ['session-output:website', 'other:note']);
+	});
+
+	test('the attach item embeds an output-type indicator that follows the displayed kind', () => {
+		const instantiationService = workbenchInstantiationService(undefined, store);
+		const selected = observableValue<SessionOutputKind>('outputType', 'auto');
+		const input: ChatInputPart = Object.assign(Object.create(ChatInputPart.prototype), {
+			_outputTypePicker: { selected },
+			instantiationService,
+			_toolbarRelayoutScheduler: { schedule: () => { } },
+		});
+		const create = Reflect.get(ChatInputPart.prototype, '_createAttachContextActionViewItem') as (this: ChatInputPart, action: MenuItemAction, options: undefined) => MenuEntryActionViewItem;
+		const action = new MenuItemAction({ id: 'chat.attachContext', title: 'Attach Context', icon: Codicon.add }, undefined, undefined, undefined, undefined,
+			instantiationService.get(IContextKeyService), instantiationService.get(ICommandService));
+		const item = store.add(create.call(input, action, undefined));
+		const container = dom.append(mainWindow.document.body, dom.$('div'));
+		store.add(toDisposable(() => container.remove()));
+		item.render(container);
+
+		const indicator = container.querySelector<HTMLElement>('.chat-output-type-indicator');
+		assert.ok(indicator, 'a picker-enabled attach item embeds the indicator');
+		assert.ok(indicator.hidden, 'Auto-Select keeps the indicator hidden');
+
+		selected.set('website', undefined);
+		assert.strictEqual(indicator.hidden, false);
+		assert.ok(indicator.classList.contains('codicon-globe'));
+		assert.strictEqual(indicator.getAttribute('aria-label'), 'Output type: Website');
+
+		selected.set('auto', undefined);
+		assert.strictEqual(indicator.hidden, true);
+
+		const plain: ChatInputPart = Object.assign(Object.create(ChatInputPart.prototype), { _outputTypePicker: undefined, instantiationService });
+		const plainItem = store.add(create.call(plain, action, undefined));
+		const plainContainer = dom.append(mainWindow.document.body, dom.$('div'));
+		store.add(toDisposable(() => plainContainer.remove()));
+		plainItem.render(plainContainer);
+		assert.strictEqual(plainContainer.querySelector('.chat-output-type-indicator'), null, 'no picker, no indicator');
 	});
 
 	test('preserves the saved Agent Host mode when flushing a draft that displays default Agent', () => {

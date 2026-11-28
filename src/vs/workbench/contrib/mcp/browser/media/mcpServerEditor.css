@@ -3,6 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+.editor-instance[data-editor-id="workbench.editor.mcpServer"] {
+	background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
+	display: flow-root;
+}
+
 .mcp-server-editor {
 	.configuration-content {
 		padding: 20px;

@@ -223,21 +223,23 @@ export class McpServerRequestHandler extends Disposable {
 	 *
 	 * @param request The request to send
 	 * @param token Cancellation token
-	 * @param timeoutMs Optional timeout in milliseconds
+	 * @param errorOnUserInteraction Whether this request must avoid authentication prompts
 	 * @returns A promise that resolves with the response
 	 */
 	private async sendRequest<T extends MCP.ClientRequest, R extends MCP.ServerResult>(
 		request: Pick<T, 'params' | 'method'>,
-		token: CancellationToken = CancellationToken.None
+		token: CancellationToken = CancellationToken.None,
+		errorOnUserInteraction?: boolean,
 	): Promise<R> {
-		if (this._store.isDisposed) {
+		if (this._store.isDisposed || token.isCancellationRequested) {
 			return Promise.reject(new CancellationError());
 		}
 
 		return this._rpc.sendRequest<R>(
 			request,
 			token,
-			id => this.sendNotification({ method: 'notifications/cancelled', params: { requestId: id } })
+			id => this.sendNotification({ method: 'notifications/cancelled', params: { requestId: id } }),
+			message => this.send(message as MCP.JSONRPCMessage, errorOnUserInteraction),
 		).catch(error => {
 			if (error instanceof JsonRpcError) {
 				throw new MpcResponseError(error.message, error.code, error.data);
@@ -246,12 +248,12 @@ export class McpServerRequestHandler extends Disposable {
 		});
 	}
 
-	private send(mcp: MCP.JSONRPCMessage) {
+	private send(mcp: MCP.JSONRPCMessage, errorOnUserInteraction?: boolean) {
 		if (canLog(this.logger.getLevel(), this._requestLogLevel)) { // avoid building the string if we don't need to
 			log(this.logger, this._requestLogLevel, `[editor -> server] ${JSON.stringify(mcp)}`);
 		}
 
-		this._launch.send(mcp);
+		this._launch.send(mcp, errorOnUserInteraction);
 	}
 
 	/**
@@ -518,8 +520,8 @@ export class McpServerRequestHandler extends Disposable {
 	/**
 	 * Call a specific tool. Supports tasks automatically if `task` is set on the request.
 	 */
-	async callTool(params: MCP.CallToolRequest['params'] & MCP.Request['params'], token?: CancellationToken, onStatusMessage?: (message: string) => void): Promise<MCP.CallToolResult> {
-		const response = await this.sendRequest<MCP.CallToolRequest, MCP.CallToolResult | MCP.CreateTaskResult>({ method: 'tools/call', params }, token);
+	async callTool(params: MCP.CallToolRequest['params'] & MCP.Request['params'], token?: CancellationToken, onStatusMessage?: (message: string) => void, errorOnUserInteraction = false): Promise<MCP.CallToolResult> {
+		const response = await this.sendRequest<MCP.CallToolRequest, MCP.CallToolResult | MCP.CreateTaskResult>({ method: 'tools/call', params }, token, errorOnUserInteraction);
 
 		if (isTaskResult(response)) {
 			const task = new McpTask<MCP.CallToolResult>(response.task, token, onStatusMessage);

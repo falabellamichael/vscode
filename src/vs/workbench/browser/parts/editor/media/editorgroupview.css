@@ -60,6 +60,12 @@
 	height: 100%;
 }
 
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-container > .editor-instance[data-editor-id="workbench.editor.viewEditor"] {
+	background-color: var(--vscode-sideBar-background, var(--vscode-panel-background, var(--vscode-editor-background)));
+	color: var(--vscode-foreground);
+	display: flow-root;
+}
+
 .monaco-workbench .part.editor > .content .editor-group-container.empty  {
 	opacity: 0.5; /* dimmed to indicate inactive state */
 }
@@ -189,7 +195,7 @@
 	padding: 0 var(--vscode-spacing-size80);
 	border-radius: var(--vscode-cornerRadius-small);
 	cursor: pointer;
-	color: var(--vscode-foreground);
+	color: var(--vscode-editor-foreground, var(--vscode-foreground));
 	font-size: var(--vscode-fontSize-body1);
 	font-weight: var(--vscode-fontWeight-regular);
 	text-decoration: none;
@@ -213,7 +219,7 @@
 	flex: 0 0 auto;
 	width: var(--vscode-codiconFontSize);
 	font-size: var(--vscode-codiconFontSize);
-	color: var(--vscode-descriptionForeground);
+	color: color-mix(in srgb, var(--vscode-editor-foreground, var(--vscode-foreground)) 72%, transparent);
 }
 
 .monaco-workbench .editor-group-watermark .watermark-label,
@@ -228,7 +234,7 @@
 .monaco-workbench .editor-group-watermark .watermark-keybinding,
 .monaco-workbench .empty-editor-hint-actions .watermark-keybinding {
 	flex: 0 0 auto;
-	color: var(--vscode-descriptionForeground);
+	color: color-mix(in srgb, var(--vscode-editor-foreground, var(--vscode-foreground)) 72%, transparent);
 }
 
 /* Title */

@@ -50,7 +50,7 @@ export class DynamicAuthenticationProviderStorageService extends Disposable impl
 		}));
 	}
 
-	async getClientRegistration(providerId: string): Promise<{ clientId?: string; clientSecret?: string } | undefined> {
+	async getClientRegistration(providerId: string): ReturnType<IDynamicAuthenticationProviderStorageService['getClientRegistration']> {
 		// First try new combined SecretStorage format
 		const key = `dynamicAuthProvider:clientRegistration:${providerId}`;
 		const credentialsValue = await this.secretStorageService.get(key);
@@ -78,13 +78,13 @@ export class DynamicAuthenticationProviderStorageService extends Disposable impl
 		return provider?.clientId;
 	}
 
-	async storeClientRegistration(providerId: string, authorizationServer: string, clientId: string, clientSecret?: string, label?: string): Promise<void> {
+	async storeClientRegistration(providerId: string, authorizationServer: string, clientId: string, clientSecret?: string, label?: string, tokenEndpointAuthMethod?: string): Promise<void> {
 		// Store provider information for backward compatibility and UI display
 		this._trackProvider(providerId, authorizationServer, clientId, label);
 
-		// Store both client ID and secret together in SecretStorage
+		// Keep the authentication method together with its credentials.
 		const key = `dynamicAuthProvider:clientRegistration:${providerId}`;
-		const credentials = { clientId, clientSecret };
+		const credentials = { clientId, clientSecret, tokenEndpointAuthMethod };
 		await this.secretStorageService.set(key, JSON.stringify(credentials));
 	}
 

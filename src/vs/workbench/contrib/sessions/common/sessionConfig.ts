@@ -7,6 +7,7 @@ import type { ResolveSessionConfigResult } from '../../../../platform/agentHost/
 
 export const USE_WORKTREE_SETTING = 'sessions.useWorktree';
 export const ASSISTANT_WEATHER_LOCATION_SETTING = 'sessions.assistant.weatherLocation';
+export const ASSISTANT_MAIL_WATCH_SETTING = 'sessions.assistant.mailWatch.enabled';
 
 export const SESSIONS_DRAFTS_ENABLED_SETTING = 'sessions.drafts.enabled';
 export const SESSIONS_SEND_LATER_ENABLED_SETTING = 'sessions.sendLater.enabled';

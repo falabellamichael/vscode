@@ -24,14 +24,14 @@ export const ASSISTANT_BRIEFINGS: Readonly<Record<AssistantBriefingPeriod, IAssi
 		id: 'assistant-morning-briefing',
 		name: localize('assistantBriefings.morning', "Morning briefing"),
 		description: localize('assistantBriefings.morningDescription', "Today's priorities, requests that need a reply, and upcoming deadlines."),
-		prompt: `Prepare my morning briefing. Review key changes since yesterday evening and events expected today in the relevant local time zone. Lead with the three most important things to act on. Cover today's agenda, waiting replies and decisions, and GitHub work needing attention. Include today's Weather Network forecast if I specified a city or have a default weather location in Settings.\n\n${briefingSources}\n\n${briefingNews}`,
+		prompt: `Prepare my morning briefing. Review key changes since yesterday evening and events expected today in the relevant local time zone. Lead with the three most important things to act on. Cover today's agenda, waiting replies and decisions, and GitHub work needing attention. Include today's weather forecast if I specified a city or have a default weather location in Settings.\n\n${briefingSources}\n\n${briefingNews}`,
 		schedule: { interval: 'daily', scheduleHour: 8, scheduleMinute: 0, scheduleDay: 0 },
 	},
 	evening: {
 		id: 'assistant-evening-briefing',
 		name: localize('assistantBriefings.evening', "Evening briefing"),
 		description: localize('assistantBriefings.eveningDescription', "What changed today, what's still open, and what to prepare for tomorrow."),
-		prompt: `Prepare my evening briefing. Cover today's completed work, decisions, open threads and blockers, and tomorrow's first priorities in the relevant local time zone. Verify completed work from the sources and distinguish it from activity that is still in progress. Include tomorrow's Weather Network forecast if I specified a city or have a default weather location in Settings.\n\n${briefingSources}\n\n${briefingNews}`,
+		prompt: `Prepare my evening briefing. Cover today's completed work, decisions, open threads and blockers, and tomorrow's first priorities in the relevant local time zone. Verify completed work from the sources and distinguish it from activity that is still in progress. Include tomorrow's weather forecast if I specified a city or have a default weather location in Settings.\n\n${briefingSources}\n\n${briefingNews}`,
 		schedule: { interval: 'daily', scheduleHour: 18, scheduleMinute: 0, scheduleDay: 0 },
 	},
 };

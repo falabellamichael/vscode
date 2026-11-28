@@ -97,7 +97,7 @@
 	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120) var(--vscode-spacing-size40) var(--vscode-spacing-size80);
 	border-radius: var(--vscode-cornerRadius-medium);
 	background-color: var(--vscode-chat-requestBubbleBackground);
-	color: var(--vscode-foreground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 	font-size: var(--vscode-fontSize-body1);
 }
 

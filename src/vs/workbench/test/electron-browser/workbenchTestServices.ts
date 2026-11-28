@@ -166,12 +166,16 @@ export class TestNativeHostService implements INativeHostService {
 	async setDocumentEdited(edited: boolean): Promise<void> { }
 	async setApplicationBadge(badge: IApplicationBadge | undefined): Promise<void> { }
 	async openExternal(url: string, defaultApplication?: string): Promise<boolean> { return false; }
+	async authorizeQuickBooksSandbox(): Promise<string> { throw new Error('QuickBooks OAuth is unavailable in this test host'); }
+	async reauthorizeQuickBooksSandbox(): Promise<void> { throw new Error('QuickBooks OAuth is unavailable in this test host'); }
+	async cancelQuickBooksSandboxAuthorization(): Promise<void> { }
 	async requestReachAuthentication(): Promise<{ status: number }> { return { status: 503 }; }
 	async sendReachAssistantPrompt(): Promise<{ kind: 'unavailable' }> { return { kind: 'unavailable' }; }
+	async accessReachWorkspaceFile(): Promise<never> { throw new Error('REACH file operations are unavailable in this test host'); }
 	async listReachAssistantModels(): Promise<[]> { return []; }
 	async readAssistantNewsFeeds(): Promise<[]> { return []; }
 	async readAssistantWeatherForecast(): Promise<never> { throw new Error('Weather API fixture is unavailable'); }
-	async stopReachAssistantPrompt(): Promise<void> { }
+	async finishReachAssistantTurn(): Promise<void> { }
 	readonly onDidReceiveReachAssistantChunk = Event.None;
 	async updateTouchBar(): Promise<void> { }
 	async moveItemToTrash(): Promise<void> { }

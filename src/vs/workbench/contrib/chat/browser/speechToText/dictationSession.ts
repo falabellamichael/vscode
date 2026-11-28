@@ -5,6 +5,7 @@
 
 import './media/dictationSession.css';
 import { status } from '../../../../../base/browser/ui/aria/aria.js';
+import { CancellationError } from '../../../../../base/common/errors.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ICodeEditor } from '../../../../../editor/browser/editorBrowser.js';
@@ -293,6 +294,8 @@ interface IActiveDictation {
 	readonly disposables: DisposableStore;
 	readonly logService: ILogService;
 	readonly surface: ChatDictationSurface;
+	/** The host replaced the draft while the recognizer was finishing. */
+	discarded?: boolean;
 }
 
 /**
@@ -318,7 +321,7 @@ function setActiveDictation(active: IActiveDictation | undefined): void {
  * concurrent stop/submit for the same editor await that same finalization (and
  * the final transcript it inserts) instead of racing ahead with interim text.
  */
-let _finalizing: { readonly editor: ICodeEditor; readonly promise: Promise<void> } | undefined;
+let _finalizing: { readonly session: IActiveDictation; readonly promise: Promise<void> } | undefined;
 
 function setFinalizingDictation(finalizing: typeof _finalizing): void {
 	if (_finalizing !== finalizing) {
@@ -339,7 +342,7 @@ export function activeDictationEditor(): ICodeEditor | undefined {
 
 /** Whether `editor` owns the active or finalizing dictation session. */
 export function isDictationActiveForEditor(editor: ICodeEditor): boolean {
-	return _active?.editor === editor || _finalizing?.editor === editor;
+	return _active?.editor === editor || _finalizing?.session.editor === editor;
 }
 
 /** Start dictating into `editor`, rendering the transcript live. */
@@ -449,7 +452,7 @@ export async function startDictation(service: IChatSpeechToTextService, editor: 
 	// The target editor can be disposed out from under us (e.g. the Agents
 	// composer is closed); cancel dictation instead of leaving the microphone
 	// and local transcription running against a dead editor.
-	disposables.add(editor.onDidDispose(() => cancelDictation()));
+	disposables.add(editor.onDidDispose(() => cancelDictationForEditor(editor)));
 	const activeDictation = { service, editor, inserter, disposables, logService, surface };
 	setActiveDictation(activeDictation);
 	try {
@@ -485,7 +488,7 @@ export async function stopDictation(): Promise<void> {
 	}
 	setActiveDictation(undefined);
 	const promise = finalizeDictation(active);
-	setFinalizingDictation({ editor: active.editor, promise });
+	setFinalizingDictation({ session: active, promise });
 	try {
 		await promise;
 	} finally {
@@ -503,6 +506,7 @@ async function finalizeDictation(active: IActiveDictation): Promise<void> {
 	active.inserter.beginFinalize();
 	try {
 		const text = await active.service.stopAndTranscribe({ preserveLiveTranscript: active.service.showTranscriptWhileDictating });
+		if (active.discarded) { return; }
 		active.logService.trace(`${LOG_PREFIX} stopAndTranscribe resolved text=${text === undefined ? 'undefined' : `len=${text.length}`}`);
 		if (text !== undefined) {
 			// Final transcript: render it solid (no interim styling).
@@ -521,19 +525,41 @@ async function finalizeDictation(active: IActiveDictation): Promise<void> {
 		// Return focus to the dictation editor so the caret (just un-hidden by
 		// disposing the hide-cursor class) reappears immediately at the end of the
 		// inserted transcript, ready for the user to continue typing.
-		active.editor.focus();
+		if (!active.discarded) { active.editor.focus(); }
 	}
 }
 
 /** Stop dictation only when it is targeting `editor`. */
 export async function stopDictationForEditor(editor: ICodeEditor): Promise<void> {
-	if (_active?.editor === editor) {
+	const active = _active;
+	const finalizing = _finalizing;
+	if (active?.editor === editor) {
 		await stopDictation();
-	} else if (_finalizing?.editor === editor) {
+		if (active.discarded) { throw new CancellationError(); }
+	} else if (finalizing?.session.editor === editor) {
 		// A stop for this editor is already finalizing (it cleared `_active` before
 		// awaiting the transcript); await that finalization so a second submit does
 		// not send interim text ahead of the final transcript being inserted.
-		await _finalizing.promise;
+		await finalizing.promise;
+		if (finalizing.session.discarded) { throw new CancellationError(); }
+	}
+}
+
+/** Release this editor before replacing its draft. Keep text already visible in the old draft. */
+export function cancelDictationForEditor(editor: ICodeEditor): void {
+	const finalizing = _finalizing?.session;
+	if (finalizing?.editor === editor) {
+		finalizing.discarded = true;
+		setFinalizingDictation(undefined);
+		finalizing.disposables.dispose();
+		if (!_active) { void finalizing.service.cancel(); }
+	}
+	const active = _active;
+	if (active?.editor === editor) {
+		active.discarded = true;
+		setActiveDictation(undefined);
+		active.disposables.dispose();
+		void active.service.cancel();
 	}
 }
 

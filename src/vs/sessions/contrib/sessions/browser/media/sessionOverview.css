@@ -11,7 +11,7 @@
 	padding: var(--vscode-spacing-size160);
 	min-width: 0;
 	overflow: auto;
-	color: var(--vscode-foreground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 }
 
 .monaco-workbench .session-overview p,
@@ -26,7 +26,7 @@
 }
 
 .monaco-workbench .session-overview-context {
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 }
 
 .monaco-workbench .session-overview-status {

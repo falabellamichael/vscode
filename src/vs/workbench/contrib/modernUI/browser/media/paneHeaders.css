@@ -81,10 +81,28 @@
 
 .modern-ui :is(.part.sidebar, .part.auxiliarybar) .monaco-pane-view .pane > .pane-header {
 	background-color: var(--vscode-sideBar-background) !important;
+	color: var(--vscode-sideBar-foreground, var(--vscode-foreground)) !important;
+}
+
+.modern-ui :is(.part.sidebar, .part.auxiliarybar) .monaco-pane-view .pane > .pane-header > :is(.icon.codicon, .twisty-container, .title) {
+	color: inherit !important;
+}
+
+.modern-ui :is(.part.sidebar, .part.auxiliarybar) .monaco-pane-view .pane > .pane-header > .icon:not(.codicon) {
+	background-color: var(--vscode-sideBar-foreground, var(--vscode-foreground)) !important;
 }
 
 .modern-ui .part.panel .monaco-pane-view .pane > .pane-header {
 	background-color: var(--vscode-panel-background) !important;
+	color: var(--vscode-panel-foreground, var(--vscode-foreground)) !important;
+}
+
+.modern-ui .part.panel .monaco-pane-view .pane > .pane-header > :is(.icon.codicon, .twisty-container, .title) {
+	color: inherit !important;
+}
+
+.modern-ui .part.panel .monaco-pane-view .pane > .pane-header > .icon:not(.codicon) {
+	background-color: var(--vscode-panel-foreground, var(--vscode-foreground)) !important;
 }
 
 /*

@@ -229,7 +229,13 @@ export interface IRegisterAuthenticationProviderDetails {
 export interface IRegisterDynamicAuthenticationProviderDetails extends IRegisterAuthenticationProviderDetails {
 	clientId: string;
 	clientSecret?: string;
+	tokenEndpointAuthMethod?: string;
 	authorizationServer: UriComponents;
+}
+
+export interface ISignalCOAuthCallback {
+	readonly redirectUri: string;
+	readonly windowId: number;
 }
 
 export interface IXaaProviderDiscovery {
@@ -246,14 +252,14 @@ export interface MainThreadAuthenticationShape extends IDisposable {
 	$getSession(providerId: string, scopeListOrRequest: ReadonlyArray<string> | IAuthenticationWwwAuthenticateRequest, extensionId: string, extensionName: string, options: AuthenticationGetSessionOptions): Promise<Dto<AuthenticationSession> | undefined>;
 	$getAccounts(providerId: string): Promise<ReadonlyArray<Dto<AuthenticationSessionAccount>>>;
 	$removeSession(providerId: string, sessionId: string): Promise<void>;
-	$waitForUriHandler(expectedUri: UriComponents): Promise<UriComponents>;
+	$waitForUriHandler(expectedUri: UriComponents, token: CancellationToken): Promise<UriComponents>;
 	$showContinueNotification(message: string): Promise<boolean>;
 	$showDeviceCodeModal(userCode: string, verificationUri: string): Promise<boolean>;
 	$promptForClientRegistration(authorizationServerUrl: string): Promise<{ clientId: string; clientSecret?: string } | undefined>;
 	$promptForResourceClientSecret(resourceClientId: string, resource: string): Promise<string | undefined>;
 	$registerDynamicAuthenticationProvider(details: IRegisterDynamicAuthenticationProviderDetails): Promise<void>;
 	$setSessionsForDynamicAuthProvider(authProviderId: string, clientId: string, sessions: (IAuthorizationTokenResponse & { created_at: number })[]): Promise<void>;
-	$sendDidChangeDynamicProviderInfo({ providerId, clientId, authorizationServer, label, clientSecret }: { providerId: string; clientId?: string; authorizationServer?: UriComponents; label?: string; clientSecret?: string }): Promise<void>;
+	$sendDidChangeDynamicProviderInfo({ providerId, clientId, authorizationServer, label, clientSecret, tokenEndpointAuthMethod }: { providerId: string; clientId?: string; authorizationServer?: UriComponents; label?: string; clientSecret?: string; tokenEndpointAuthMethod?: string }): Promise<void>;
 }
 
 export interface MainThreadSecretStateShape extends IDisposable {
@@ -2708,7 +2714,7 @@ export interface ExtHostAuthenticationShape {
 	$removeSession(id: string, sessionId: string): Promise<void>;
 	$onDidChangeAuthenticationSessions(id: string, label: string, extensionIdFilter?: string[]): Promise<void>;
 	$onDidUnregisterAuthenticationProvider(id: string): Promise<void>;
-	$registerDynamicAuthProvider(authorizationServer: UriComponents, serverMetadata: IAuthorizationServerMetadata, resource?: IAuthorizationProtectedResourceMetadata, clientId?: string, clientSecret?: string, initialTokens?: (IAuthorizationTokenResponse & { created_at: number })[], providerId?: string): Promise<string>;
+	$registerDynamicAuthProvider(authorizationServer: UriComponents, serverMetadata: IAuthorizationServerMetadata, resource?: IAuthorizationProtectedResourceMetadata, clientId?: string, clientSecret?: string, initialTokens?: (IAuthorizationTokenResponse & { created_at: number })[], providerId?: string, tokenEndpointAuthMethod?: string, signalCOAuthCallback?: ISignalCOAuthCallback): Promise<string>;
 	$registerXaaAuthProvider(issuer: UriComponents, serverMetadata: IAuthorizationServerMetadata, clientId?: string, clientSecret?: string, initialTokens?: (IAuthorizationTokenResponse & { created_at: number })[]): Promise<string>;
 	$onDidChangeDynamicAuthProviderTokens(authProviderId: string, clientId: string, tokens?: (IAuthorizationTokenResponse & { created_at: number })[]): Promise<void>;
 }
@@ -3905,7 +3911,7 @@ export interface ExtHostMcpShape {
 	$resolveMcpLaunch(collectionId: string, label: string): Promise<McpServerLaunch.Serialized | undefined>;
 	$startMcp(id: number, opts: IStartMcpOptions): void;
 	$stopMcp(id: number): void;
-	$sendMessage(id: number, message: string): void;
+	$sendMessage(id: number, message: string, errorOnUserInteraction?: boolean): void;
 	$waitForInitialCollectionProviders(): Promise<void>;
 	$onDidChangeMcpServerDefinitions(servers: McpServerDefinition.Serialized[]): void;
 	$onDidChangeGatewayServers(gatewayId: string, servers: { label: string; address: UriComponents }[]): void;
@@ -3928,8 +3934,16 @@ export interface IMcpAuthenticationDetails {
 
 export interface IMcpAuthenticationOptions {
 	errorOnUserInteraction?: boolean;
-	forceNewRegistration?: boolean;
+	/** SHA-256 fingerprint of the access token rejected by this MCP resource. */
+	rejectedTokenFingerprint?: string;
+	/** Identifies the existing grant whose account is requesting additional scopes. */
+	scopeUpgradeFrom?: { scopes: string[]; tokenFingerprint: string };
 	clientId?: string;
+}
+
+export interface IMcpOAuthGrant {
+	readonly accessToken: string;
+	readonly scopes: readonly string[];
 }
 
 export const enum IAuthResourceMetadataSource {
@@ -3957,7 +3971,7 @@ export interface MainThreadMcpShape {
 	$onDidReceiveMessage(id: number, message: string): void;
 	$upsertMcpCollection(collection: McpCollectionDefinition.FromExtHost, servers: McpServerDefinition.Serialized[]): void;
 	$deleteMcpCollection(collectionId: string): void;
-	$getTokenFromServerMetadata(id: number, authDetails: IMcpAuthenticationDetails, options?: IMcpAuthenticationOptions): Promise<string | undefined>;
+	$getTokenFromServerMetadata(id: number, authDetails: IMcpAuthenticationDetails, options?: IMcpAuthenticationOptions): Promise<IMcpOAuthGrant | undefined>;
 	$getTokenForProviderId(id: number, providerId: string, scopes: string[], options?: IMcpAuthenticationOptions): Promise<string | undefined>;
 	$logMcpAuthSetup(data: IAuthMetadataSource): void;
 	$startMcpGateway(chatSessionResource?: UriComponents): Promise<{ servers: { label: string; address: UriComponents }[]; gatewayId: string } | undefined>;

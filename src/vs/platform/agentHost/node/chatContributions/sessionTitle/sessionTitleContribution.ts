@@ -46,6 +46,9 @@ export class SessionTitleContribution extends Disposable implements IAgentHostCh
 
 	async onOutgoingTurn(turn: IOutgoingTurn): Promise<ISendContribution | undefined> {
 		this._turnTracker.setTitleGenerationStrategy(turn.chat, turn.turnId, this._titleController.getAutomaticTitleGenerationStrategy(turn.session));
+		if (turn.renameChatTool === false) {
+			return undefined;
+		}
 		const instruction = await this._titleController.prepareInstructionForAgent(turn.session, turn.chat);
 		return instruction ? { instructions: [instruction] } : undefined;
 	}

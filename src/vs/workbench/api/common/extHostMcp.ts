@@ -23,9 +23,9 @@ import product from '../../../platform/product/common/product.js';
 import { StorageScope } from '../../../platform/storage/common/storage.js';
 import { extensionPrefixedIdentifier, McpCollectionDefinition, McpConnectionState, McpServerDefinition, McpServerEnvironmentVariableExpansion, McpServerLaunch, McpServerStaticMetadata, McpServerStaticToolAvailability, McpServerTransportHTTP, McpServerTransportType, UserInteractionRequiredError } from '../../contrib/mcp/common/mcpTypes.js';
 import { MCP } from '../../contrib/mcp/common/modelContextProtocol.js';
-import { isGoogleWorkspaceOAuth } from '../../services/authentication/common/authentication.js';
+import { getOAuthTokenFingerprint, isGoogleWorkspaceOAuth } from '../../services/authentication/common/authentication.js';
 import { checkProposedApiEnabled, isProposedApiEnabled } from '../../services/extensions/common/extensions.js';
-import { ExtHostMcpShape, IMcpAuthenticationDetails, IAuthMetadataSource, IStartMcpOptions, MainContext, MainThreadMcpShape, IAuthResourceMetadataSource, IAuthServerMetadataSource } from './extHost.protocol.js';
+import { ExtHostMcpShape, IMcpAuthenticationDetails, IMcpAuthenticationOptions, IAuthMetadataSource, IStartMcpOptions, MainContext, MainThreadMcpShape, IAuthResourceMetadataSource, IAuthServerMetadataSource } from './extHost.protocol.js';
 import { IExtHostInitDataService } from './extHostInitDataService.js';
 import { IExtHostRpcService } from './extHostRpcService.js';
 import * as Convert from './extHostTypeConverters.js';
@@ -157,8 +157,8 @@ export class ExtHostMcpService extends Disposable implements IExtHostMpcService 
 		this._sseEventSources.deleteAndDispose(id);
 	}
 
-	$sendMessage(id: number, message: string): void {
-		this._sseEventSources.get(id)?.send(message);
+	$sendMessage(id: number, message: string, errorOnUserInteraction?: boolean): void {
+		this._sseEventSources.get(id)?.send(message, errorOnUserInteraction);
 	}
 
 	async $waitForInitialCollectionProviders(): Promise<void> {
@@ -371,6 +371,12 @@ function isSameSocketEndpoint(url: string, configuredUrl: string): boolean {
 		&& destination.path === configured.path;
 }
 
+interface McpToolAuthorization {
+	readonly id: MCP.RequestId;
+	readonly errorOnUserInteraction: boolean;
+	cancelled: boolean;
+}
+
 /**
  * Implementation of both MCP HTTP Streaming as well as legacy SSE.
  *
@@ -385,6 +391,8 @@ export class McpHTTPHandle extends Disposable {
 	private readonly _cts = new CancellationTokenSource();
 	private readonly _abortCtrl = new AbortController();
 	private _authMetadata?: AuthMetadata;
+	private readonly _oauthRequests = new WeakMap<Record<string, string>, { source: 'metadata'; requestedScopes: string[] | undefined; grantedScopes: readonly string[] } | { source: 'configured' }>();
+	private readonly _toolAuthorizations = new Map<MCP.RequestId, McpToolAuthorization>();
 	private _didSendClose = false;
 
 	constructor(
@@ -403,15 +411,35 @@ export class McpHTTPHandle extends Disposable {
 		this._proxy.$onDidChangeState(this._id, { state: McpConnectionState.Kind.Running });
 	}
 
-	async send(message: string) {
+	async send(message: string, errorOnUserInteraction?: boolean) {
+		const request = errorOnUserInteraction !== undefined || message.includes('"notifications/cancelled"')
+			? JSON.parse(message) as Partial<MCP.JSONRPCRequest> | null
+			: undefined;
+		if (request?.method === 'notifications/cancelled') {
+			const requestId = request.params?.requestId;
+			const pending = (typeof requestId === 'string' || typeof requestId === 'number') && this._toolAuthorizations.get(requestId);
+			if (pending) {
+				pending.cancelled = true;
+			}
+		}
+		const authorization: McpToolAuthorization | undefined = request?.method === 'tools/call' && request.id !== undefined
+			? { id: request.id, errorOnUserInteraction: !!errorOnUserInteraction, cancelled: false }
+			: undefined;
+		if (authorization) {
+			this._toolAuthorizations.set(authorization.id, authorization);
+		}
 		try {
 			if (this._mode.value === HttpMode.Unknown) {
-				await this._requestSequencer.queue(() => this._send(message));
+				await this._requestSequencer.queue(() => this._send(message, authorization));
 			} else {
-				await this._send(message);
+				await this._send(message, authorization);
 			}
 		} catch (err) {
 			this._handleSendError(err);
+		} finally {
+			if (authorization) {
+				this._toolAuthorizations.delete(authorization.id);
+			}
 		}
 	}
 
@@ -461,11 +489,16 @@ export class McpHTTPHandle extends Disposable {
 		);
 	}
 
-	private _send(message: string) {
+	private async _send(message: string, authorization?: McpToolAuthorization) {
+		if (authorization?.cancelled) {
+			return;
+		}
 		if (this._mode.value === HttpMode.SSE) {
-			return this._sendLegacySSE(this._mode.endpoint, message);
+			return this._sendLegacySSE(this._mode.endpoint, message, authorization);
+		} else if (this._mode.value === HttpMode.Unknown && this._launch.transport === 'sse') {
+			return this._sseFallbackWithMessage(message, authorization);
 		} else {
-			return this._sendStreamableHttp(message, this._mode.value === HttpMode.Http ? this._mode.sessionId : undefined);
+			return this._sendStreamableHttp(message, this._mode.value === HttpMode.Http ? this._mode.sessionId : undefined, authorization);
 		}
 	}
 
@@ -475,7 +508,7 @@ export class McpHTTPHandle extends Disposable {
 	 * 2. Updates internal state as needed. Falls back to SSE if appropriate.
 	 * 3. If the response body is empty, JSON, or a JSON stream, handle it appropriately.
 	 */
-	private async _sendStreamableHttp(message: string, sessionId: string | undefined) {
+	private async _sendStreamableHttp(message: string, sessionId: string | undefined, authorization?: McpToolAuthorization) {
 		const asBytes = new TextEncoder().encode(message) as Uint8Array<ArrayBuffer>;
 		const transportHeaders = {
 			'Content-Type': 'application/json',
@@ -488,7 +521,25 @@ export class McpHTTPHandle extends Disposable {
 		if (sessionId) {
 			headers['Mcp-Session-Id'] = sessionId;
 		}
-		await this._addAuthHeader(headers);
+		const uri = this._launch.uri;
+		const googleScopes = uri.scheme === 'https' && uri.path === '/mcp/v1' && !uri.query && !uri.fragment
+			&& this._launch.oauth?.clientId && !this._launch.oauth.enterpriseManaged && !Object.keys(headers).some(key => key.toLowerCase() === 'authorization')
+			? googleWorkspaceScopes.get(uri.authority) : undefined;
+		if (googleScopes && !this._authMetadata) {
+			// Google's public initialize and tools/list calls succeed before account authorization.
+			const metadata = await this._discoverAuthMetadata(uri.toString(true), new Headers(), googleScopes);
+			if (!metadata.resourceMetadata || !isGoogleWorkspaceOAuth(metadata.authorizationServer, metadata.serverMetadata, uri)) {
+				throw new Error('Google Workspace MCP did not advertise the expected Google authorization metadata.');
+			}
+			this._authMetadata = metadata;
+		}
+		await this._addAuthHeader(headers, { errorOnUserInteraction: authorization?.errorOnUserInteraction });
+		if (authorization?.cancelled) {
+			return;
+		}
+		if (googleScopes && !headers['Authorization']) {
+			throw new Error('Google Workspace MCP could not authorize this connection. Check the OAuth app and sign in again.');
+		}
 
 		const res = await this._fetchWithAuthRetry(
 			this._launch.uri.toString(true),
@@ -499,9 +550,17 @@ export class McpHTTPHandle extends Disposable {
 			},
 			headers,
 			transportHeaders,
+			authorization,
 		);
+		if (authorization?.cancelled) {
+			void res.body?.cancel().catch(() => { /* response already closed */ });
+			return;
+		}
 
 		const wasUnknown = this._mode.value === HttpMode.Unknown;
+		if (!wasUnknown && this._respondToScopeFailure(authorization, res, headers)) {
+			return;
+		}
 
 		// Mcp-Session-Id is the strongest signal that we're in streamable HTTP mode
 		const nextSessionId = res.headers.get('Mcp-Session-Id');
@@ -516,7 +575,7 @@ export class McpHTTPHandle extends Disposable {
 			&& !isAuthStatusCode(res.status)
 		) {
 			this._log(LogLevel.Info, `${res.status} status sending message to ${this._launch.uri}, will attempt to fall back to legacy SSE`);
-			this._sseFallbackWithMessage(message);
+			await this._sseFallbackWithMessage(message, authorization);
 			return;
 		}
 
@@ -541,35 +600,36 @@ export class McpHTTPHandle extends Disposable {
 			this._attachStreamableBackchannel();
 		}
 
-		await this._handleSuccessfulStreamableHttp(res, message);
+		await this._handleSuccessfulStreamableHttp(res, message, authorization);
 	}
 
-	private async _sseFallbackWithMessage(message: string) {
+	private async _sseFallbackWithMessage(message: string, authorization?: McpToolAuthorization) {
 		try {
 			const endpoint = await this._attachSSE();
 			if (endpoint) {
 				this._mode = { value: HttpMode.SSE, endpoint };
-				await this._sendLegacySSE(endpoint, message);
+				await this._sendLegacySSE(endpoint, message, authorization);
 			}
 		} catch (err) {
 			this._handleSendError(err);
 		}
 	}
 
-	private async _handleSuccessfulStreamableHttp(res: CommonResponse, message: string) {
+	private async _handleSuccessfulStreamableHttp(res: CommonResponse, message: string, authorization?: McpToolAuthorization) {
 		if (res.status === 202) {
 			return; // no body
 		}
 
 		const contentType = res.headers.get('Content-Type')?.toLowerCase() || '';
 		if (contentType.startsWith('text/event-stream')) {
+			let fallback: Promise<void> | undefined;
 			const parser = new SSEParser(event => {
 				if (event.type === 'message') {
 					this._proxy.$onDidReceiveMessage(this._id, event.data);
 				} else if (event.type === 'endpoint') {
 					// An SSE server that didn't correctly return a 4xx status when we POSTed
 					this._log(LogLevel.Warning, `Received SSE endpoint from a POST to ${this._launch.uri}, will fall back to legacy SSE`);
-					this._sseFallbackWithMessage(message);
+					fallback = this._sseFallbackWithMessage(message, authorization);
 					throw new CancellationError(); // just to end the SSE stream
 				}
 			});
@@ -579,6 +639,7 @@ export class McpHTTPHandle extends Disposable {
 			} catch (err) {
 				this._log(LogLevel.Warning, `Error reading SSE stream: ${stringifyError(err)}`);
 			}
+			await fallback;
 		} else if (contentType.startsWith('application/json')) {
 			this._proxy.$onDidReceiveMessage(this._id, await res.text());
 		} else {
@@ -729,23 +790,48 @@ export class McpHTTPHandle extends Disposable {
 	 * Sends a legacy SSE message to the server. The response is always empty and
 	 * is otherwise received in {@link _attachSSE}'s loop.
 	 */
-	private async _sendLegacySSE(url: string, message: string) {
+	private async _sendLegacySSE(url: string, message: string, authorization?: McpToolAuthorization) {
 		const asBytes = new TextEncoder().encode(message) as Uint8Array<ArrayBuffer>;
 		const transportHeaders = { 'Content-Type': 'application/json' };
 		const headers: Record<string, string> = {
 			...Object.fromEntries(this._launch.headers),
 			...transportHeaders,
 		};
-		await this._addAuthHeader(headers);
-		const res = await this._fetch(url, {
+		await this._addAuthHeader(headers, { errorOnUserInteraction: authorization?.errorOnUserInteraction });
+		if (authorization?.cancelled) {
+			return;
+		}
+		const res = await this._fetchWithAuthRetry(url, {
 			method: 'POST',
 			headers,
 			body: asBytes,
-		}, { transportHeaders });
+		}, headers, transportHeaders, authorization);
+		if (authorization?.cancelled) {
+			void res.body?.cancel().catch(() => { /* response already closed */ });
+			return;
+		}
 
-		if (res.status >= 300) {
+		if (res.status >= 300 && !this._respondToScopeFailure(authorization, res, headers)) {
 			this._log(LogLevel.Warning, `${res.status} status sending message to ${this._postEndpoint}: ${await this._getErrText(res)}`);
 		}
+	}
+
+	private _respondToScopeFailure(authorization: McpToolAuthorization | undefined, response: CommonResponse, headers: Record<string, string>): boolean {
+		if (!authorization || this._oauthRequests.get(headers)?.source !== 'metadata' || !getInsufficientScopeChallenge(response)
+			|| (response.url && !this._validateDestinationAndGetIsSameOrigin(response.url))) {
+			return false;
+		}
+		const failure: MCP.JSONRPCErrorResponse = {
+			jsonrpc: MCP.JSONRPC_VERSION,
+			id: authorization.id,
+			error: {
+				code: MCP.INTERNAL_ERROR,
+				message: localize('mcp.toolScopeRequired', "This tool requires additional sign-in permissions for the connected account."),
+			},
+		};
+		void response.body?.cancel().catch(() => { /* response already closed */ });
+		this._proxy.$onDidReceiveMessage(this._id, JSON.stringify(failure));
+		return true;
 	}
 
 	/** Generic handle to pipe a response into an SSE parser. */
@@ -773,33 +859,43 @@ export class McpHTTPHandle extends Disposable {
 		} while (!chunk.done);
 	}
 
-	private async _addAuthHeader(headers: Record<string, string>, options?: { forceNewRegistration?: boolean; errorOnUserInteraction?: boolean }) {
+	private async _addAuthHeader(headers: Record<string, string>, options?: {
+		rejectedTokenFingerprint?: string;
+		source?: 'metadata' | 'configured';
+		errorOnUserInteraction?: boolean;
+		scopeUpgrade?: { scopes: string[]; from: NonNullable<IMcpAuthenticationOptions['scopeUpgradeFrom']> };
+	}) {
 		const errorOnUserInteraction = options?.errorOnUserInteraction ?? this._errorOnUserInteraction;
-		if (this._authMetadata) {
+		if (this._authMetadata && options?.source !== 'configured') {
 			try {
 				const authDetails: IMcpAuthenticationDetails = {
 					authorizationServer: this._authMetadata.authorizationServer.toJSON(),
 					authorizationServerMetadata: this._authMetadata.serverMetadata,
 					resourceMetadata: this._authMetadata.resourceMetadata,
-					scopes: this._authMetadata.scopes,
+					scopes: options?.scopeUpgrade?.scopes ?? this._authMetadata.scopes,
 					clientId: this._launch.oauth?.clientId,
 					enterpriseManaged: this._launch.oauth?.enterpriseManaged,
 				};
-				const token = await this._proxy.$getTokenFromServerMetadata(
+				const grant = await this._proxy.$getTokenFromServerMetadata(
 					this._id,
 					authDetails,
 					{
 						errorOnUserInteraction,
-						forceNewRegistration: options?.forceNewRegistration
+						rejectedTokenFingerprint: options?.rejectedTokenFingerprint,
+						scopeUpgradeFrom: options?.scopeUpgrade?.from,
 					});
-				if (token) {
-					setHostHeader(headers, 'Authorization', `Bearer ${token}`);
+				if (grant?.accessToken) {
+					setHostHeader(headers, 'Authorization', `Bearer ${grant.accessToken}`);
+					this._oauthRequests.set(headers, { source: 'metadata', requestedScopes: authDetails.scopes, grantedScopes: grant.scopes });
 				}
 			} catch (e) {
-				this._handleAuthError(e, 'server metadata');
+				// Additional permission is optional for an established connection.
+				if (!options?.scopeUpgrade || this._mode.value === HttpMode.Unknown) {
+					this._handleAuthError(e, 'server metadata');
+				}
 			}
 		}
-		if (this._launch.authentication) {
+		if (this._launch.authentication && options?.source !== 'metadata') {
 			try {
 				this._log(LogLevel.Debug, `Using provided authentication config: providerId=${this._launch.authentication.providerId}, scopes=${this._launch.authentication.scopes.join(', ')}`);
 				const token = await this._proxy.$getTokenForProviderId(
@@ -808,12 +904,13 @@ export class McpHTTPHandle extends Disposable {
 					this._launch.authentication.scopes,
 					{
 						errorOnUserInteraction,
-						forceNewRegistration: options?.forceNewRegistration,
+						rejectedTokenFingerprint: options?.rejectedTokenFingerprint,
 						clientId: this._launch.oauth?.clientId,
 					}
 				);
 				if (token) {
 					setHostHeader(headers, 'Authorization', `Bearer ${token}`);
+					this._oauthRequests.set(headers, { source: 'configured' });
 					this._log(LogLevel.Info, 'Successfully obtained token from provided authentication config');
 				}
 			} catch (e) {
@@ -850,63 +947,99 @@ export class McpHTTPHandle extends Disposable {
 		}
 	}
 
+	private async _discoverAuthMetadata(mcpUrl: string, headers: Headers, initialScopes?: readonly string[]): Promise<AuthMetadata> {
+		const protocolHeaders = { 'MCP-Protocol-Version': MCP.LATEST_PROTOCOL_VERSION };
+		const metadata = await createAuthMetadata(mcpUrl, headers, {
+			initialScopes,
+			sameOriginHeaders: { ...Object.fromEntries(this._launch.headers), ...protocolHeaders },
+			fetch: (url, init) => this._fetch(url, init, {
+				isAuthMetadata: true,
+				transportHeaders: init.headers['MCP-Protocol-Version'] === MCP.LATEST_PROTOCOL_VERSION ? protocolHeaders : undefined,
+			}),
+			log: (level, message) => this._log(level, message),
+		});
+		this._proxy.$logMcpAuthSetup(metadata.telemetry);
+		return metadata;
+	}
+
 	/**
 	 * Helper method to perform fetch with authentication retry logic.
 	 * If the initial request returns an auth error and we don't have auth metadata,
 	 * it will populate the auth metadata and retry once.
 	 * If we already have auth metadata, check if the scopes changed and update them.
 	 */
-	private async _fetchWithAuthRetry(mcpUrl: string, init: MinimalRequestInit, headers: Record<string, string>, transportHeaders?: Readonly<Record<string, string>>): Promise<CommonResponse> {
+	private async _fetchWithAuthRetry(mcpUrl: string, init: MinimalRequestInit, headers: Record<string, string>, transportHeaders?: Readonly<Record<string, string>>, toolAuthorization?: McpToolAuthorization): Promise<CommonResponse> {
 		const doFetch = () => this._fetch(mcpUrl, init, { transportHeaders });
+		const mayRetry = () => !toolAuthorization?.cancelled && !this._store.isDisposed;
+		const errorOnUserInteraction = toolAuthorization?.errorOnUserInteraction;
 
 		let res = await doFetch();
-		if (isAuthStatusCode(res.status)) {
-			if (!this._authMetadata) {
-				const protocolHeaders = { 'MCP-Protocol-Version': MCP.LATEST_PROTOCOL_VERSION };
-				this._authMetadata = await createAuthMetadata(mcpUrl, res.headers, {
-					sameOriginHeaders: {
-						...Object.fromEntries(this._launch.headers),
-						...protocolHeaders,
-					},
-					fetch: (url, init) => this._fetch(url, init, {
-						isAuthMetadata: true,
-						transportHeaders: init.headers['MCP-Protocol-Version'] === MCP.LATEST_PROTOCOL_VERSION ? protocolHeaders : undefined,
-					}),
-					log: (level, message) => this._log(level, message)
-				});
-				this._proxy.$logMcpAuthSetup(this._authMetadata.telemetry);
-				await this._addAuthHeader(headers);
-				if (headers['Authorization']) {
-					// Update the headers in the init object
-					init.headers = headers;
-					res = await doFetch();
-				}
-			} else {
-				// We have auth metadata, but got an auth error. Check if the scopes changed.
-				if (this._authMetadata.update(res.headers)) {
-					await this._addAuthHeader(headers);
-					if (headers['Authorization']) {
-						// Update the headers in the init object
-						init.headers = headers;
-						res = await doFetch();
-					}
-				}
+		const canHandleAuth = (response: CommonResponse) => isAuthStatusCode(response.status)
+			&& this._validateDestinationAndGetIsSameOrigin(mcpUrl)
+			&& (!response.url || this._validateDestinationAndGetIsSameOrigin(response.url));
+		if (!canHandleAuth(res) || !mayRetry()) { return res; }
+
+		const hasAuthorization = Object.keys(headers).some(name => name.toLowerCase() === 'authorization');
+		if (!this._authMetadata && !hasAuthorization) {
+			this._authMetadata = await this._discoverAuthMetadata(this._launch.uri.toString(true), res.headers);
+			await this._addAuthHeader(headers, { errorOnUserInteraction });
+			if (headers['Authorization'] && mayRetry()) {
+				init.headers = headers;
+				res = await doFetch();
+			}
+		} else if (this._oauthRequests.get(headers)?.source === 'metadata' && !getInsufficientScopeChallenge(res) && this._authMetadata?.update(res.headers)) {
+			const previous = headers['Authorization'];
+			await this._addAuthHeader(headers, { source: 'metadata', errorOnUserInteraction });
+			if (headers['Authorization'] !== previous && mayRetry()) {
+				init.headers = headers;
+				res = await doFetch();
 			}
 		}
-		// If we have an Authorization header and still get an auth error, we should retry with a new auth registration
-		if (headers['Authorization'] && isAuthStatusCode(res.status)) {
+
+		const oauthRequest = this._oauthRequests.get(headers);
+		if (!oauthRequest || !canHandleAuth(res) || !mayRetry()) { return res; }
+		const { source } = oauthRequest;
+		const requiredScopes = getInsufficientScopeChallenge(res);
+		if (source === 'metadata' && this._authMetadata && requiredScopes?.length) {
 			const metadata = this._authMetadata;
-			if (res.status === 403 && metadata && isGoogleWorkspaceOAuth(metadata.authorizationServer, metadata.serverMetadata, this._launch.uri)) {
-				const challenges = parseWWWAuthenticateHeader(res.headers.get('WWW-Authenticate') ?? '');
-				if (!challenges.some(challenge => challenge.scheme.toLowerCase() === 'bearer' && challenge.params['error'] === 'invalid_token')) {
-					// Google uses 403 for project and permission errors after accepting the token.
+			const originalScopes = oauthRequest.requestedScopes;
+			const lookupScopes = originalScopes ?? metadata.resourceMetadata?.scopes_supported
+				?? (this._launch.oauth?.enterpriseManaged ? [] : metadata.serverMetadata.scopes_supported) ?? [];
+			const existing = oauthRequest.grantedScopes;
+			const scopes = [...new Set([...existing, ...requiredScopes])];
+			const authorization = headers['Authorization'];
+			const updatedHeaders = { ...headers };
+			await this._addAuthHeader(updatedHeaders, {
+				source: 'metadata',
+				errorOnUserInteraction,
+				scopeUpgrade: { scopes, from: { scopes: lookupScopes, tokenFingerprint: await getOAuthTokenFingerprint(authorization.slice('Bearer '.length)) } },
+			});
+			// An opaque bearer can remain the same across a fresh consent exchange.
+			const updatedGrant = this._oauthRequests.get(updatedHeaders);
+			if (mayRetry() && updatedGrant?.source === 'metadata' && requiredScopes.every(scope => updatedGrant.grantedScopes.includes(scope))) {
+				const retry = await this._fetch(mcpUrl, { ...init, headers: updatedHeaders }, { transportHeaders });
+				if (canHandleAuth(retry)) {
+					void retry.body?.cancel().catch(() => { /* response already closed */ });
 					return res;
 				}
+				void res.body?.cancel().catch(() => { /* response already closed */ });
+				if (retry.status >= 200 && retry.status < 300 && (!retry.url || this._validateDestinationAndGetIsSameOrigin(retry.url))) {
+					metadata.tryUpdateScopes(originalScopes, scopes);
+				}
+				return retry;
 			}
-			const errorText = await this._getErrText(res);
-			this._log(LogLevel.Info, `Received ${res.status} status with Authorization header, retrying with new auth registration. Error details: ${errorText || 'no additional details'}`);
-			await this._addAuthHeader(headers, { forceNewRegistration: true });
-			res = await doFetch();
+			return res;
+		}
+		const bearerError = parseWWWAuthenticateHeader(res.headers.get('WWW-Authenticate') ?? '')
+			.find(challenge => challenge.scheme.toLowerCase() === 'bearer')?.params['error'];
+		if (bearerError === 'invalid_token' || (res.status === 401 && bearerError === undefined)) {
+			const previous = headers['Authorization'];
+			this._log(LogLevel.Info, `The MCP server rejected its OAuth access token (HTTP ${res.status}). Requesting a replacement for this connection.`);
+			await this._addAuthHeader(headers, { source, errorOnUserInteraction, rejectedTokenFingerprint: await getOAuthTokenFingerprint(previous.slice('Bearer '.length)) });
+			if (headers['Authorization'] !== previous && mayRetry()) {
+				init.headers = headers;
+				res = await doFetch();
+			}
 		}
 		return res;
 	}
@@ -1066,6 +1199,28 @@ function isAuthStatusCode(status: number): boolean {
 	return status === 401 || status === 403;
 }
 
+function getInsufficientScopeChallenge(response: CommonResponse): string[] | undefined {
+	if (response.status !== 403) {
+		return undefined;
+	}
+	const challenge = parseWWWAuthenticateHeader(response.headers.get('WWW-Authenticate') ?? '')
+		.find(challenge => challenge.scheme.toLowerCase() === 'bearer' && challenge.params['error'] === 'insufficient_scope');
+	return challenge && (challenge.params['scope'] ?? '').split(AUTH_SCOPE_SEPARATOR).filter(scope => scope.trim().length);
+}
+
+// Consent scopes from https://developers.google.com/workspace/guides/configure-mcp-servers.
+const googleWorkspaceScopes = new Map<string, readonly string[]>(([
+	['gmailmcp.googleapis.com', ['gmail.readonly', 'gmail.compose', 'gmail.modify']],
+	['drivemcp.googleapis.com', ['drive.readonly', 'drive.file']],
+	['docsmcp.googleapis.com', ['drive.readonly', 'drive.file', 'documents.readonly', 'documents']],
+	['sheetsmcp.googleapis.com', ['drive.readonly', 'drive.file', 'spreadsheets.readonly', 'spreadsheets']],
+	['slidesmcp.googleapis.com', ['drive.readonly', 'drive.file', 'presentations.readonly', 'presentations']],
+	['calendarmcp.googleapis.com', ['calendar.calendarlist.readonly', 'calendar.events.freebusy', 'calendar.events.readonly', 'calendar.events']],
+	['chatmcp.googleapis.com', ['chat.spaces.readonly', 'chat.memberships.readonly', 'chat.messages.readonly', 'chat.messages.create', 'chat.users.readstate', 'chat.users.spacesettings']],
+	['people.googleapis.com', ['directory.readonly', 'userinfo.profile', 'contacts.readonly']],
+	['classroommcp.googleapis.com', ['classroom.announcements', 'classroom.courses.readonly', 'classroom.coursework.students', 'classroom.guardianlinks.students.readonly', 'classroom.profile.emails', 'classroom.rosters.readonly', 'classroom.student-submissions.students.readonly', 'classroom.topics.readonly', 'classroom.topics']],
+] as const).map(([host, scopes]) => [host, scopes.map(scope => `https://www.googleapis.com/auth/${scope}`)]));
+
 
 //#region AuthMetadata
 
@@ -1091,6 +1246,7 @@ export interface IAuthMetadata {
 	 * @returns true if scopes were updated, false otherwise
 	 */
 	update(responseHeaders: Headers): boolean;
+	tryUpdateScopes(previous: string[] | undefined, scopes: string[]): void;
 }
 
 /**
@@ -1117,12 +1273,18 @@ class AuthMetadata implements IAuthMetadata {
 
 	update(responseHeaders: Headers): boolean {
 		const scopesChallenge = this._parseScopesFromResponse(responseHeaders);
-		if (!scopesMatch(scopesChallenge, this._scopes)) {
+		if (scopesChallenge && !scopesMatch(scopesChallenge, this._scopes)) {
 			this._log(LogLevel.Info, `Scopes changed from ${JSON.stringify(this._scopes)} to ${JSON.stringify(scopesChallenge)}, updating`);
 			this._scopes = scopesChallenge;
 			return true;
 		}
 		return false;
+	}
+
+	tryUpdateScopes(previous: string[] | undefined, scopes: string[]): void {
+		if (this._scopes === previous) {
+			this._scopes = scopes;
+		}
 	}
 
 	private _parseScopesFromResponse(responseHeaders: Headers): string[] | undefined {
@@ -1132,7 +1294,7 @@ class AuthMetadata implements IAuthMetadata {
 		}
 		const challenges = parseWWWAuthenticateHeader(authHeader);
 		for (const challenge of challenges) {
-			if (challenge.scheme === 'Bearer' && challenge.params['scope']) {
+			if (challenge.scheme.toLowerCase() === 'bearer' && challenge.params['scope']) {
 				const scopes = challenge.params['scope'].split(AUTH_SCOPE_SEPARATOR).filter(s => s.trim().length);
 				if (scopes.length) {
 					this._log(LogLevel.Info, `Found scope challenge in WWW-Authenticate header: ${challenge.params['scope']}`);
@@ -1148,6 +1310,8 @@ class AuthMetadata implements IAuthMetadata {
  * Options for creating AuthMetadata.
  */
 export interface ICreateAuthMetadataOptions {
+	/** Provider-documented consent scopes used when the server hasn't sent a challenge. */
+	initialScopes?: readonly string[];
 	/** Headers to include when fetching metadata from the same origin as the resource server */
 	sameOriginHeaders?: Record<string, string>;
 	/** Fetch function to use for HTTP requests */
@@ -1175,7 +1339,7 @@ export async function createAuthMetadata(
 	initialResponseHeaders: Headers,
 	options: ICreateAuthMetadataOptions
 ): Promise<AuthMetadata> {
-	const { sameOriginHeaders, fetch, log } = options;
+	const { sameOriginHeaders, fetch, log, initialScopes } = options;
 
 	// Track discovery sources for telemetry
 	let resourceMetadataSource = IAuthResourceMetadataSource.None;
@@ -1211,7 +1375,7 @@ export async function createAuthMetadata(
 			log(LogLevel.Info, `Using auth server metadata url: ${serverMetadataUrl}`);
 			serverMetadataSource = IAuthServerMetadataSource.ResourceMetadata;
 		}
-		scopesChallenge ??= metadata.scopes_supported;
+		scopesChallenge ??= initialScopes ? [...initialScopes] : metadata.scopes_supported;
 		resource = metadata;
 	} catch (e) {
 		log(LogLevel.Warning, `Could not fetch resource metadata: ${String(e)}`);
@@ -1285,7 +1449,7 @@ function parseWWWAuthenticateHeaderForChallenges(
 
 	const challenges = parseWWWAuthenticateHeader(wwwAuthenticateValue);
 	for (const challenge of challenges) {
-		if (challenge.scheme === 'Bearer') {
+		if (challenge.scheme.toLowerCase() === 'bearer') {
 			if (!resourceMetadataChallenge && challenge.params['resource_metadata']) {
 				resourceMetadataChallenge = challenge.params['resource_metadata'];
 				log(LogLevel.Debug, `Found resource_metadata challenge in WWW-Authenticate header: ${resourceMetadataChallenge}`);

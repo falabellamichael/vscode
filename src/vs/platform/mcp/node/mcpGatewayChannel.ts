@@ -62,7 +62,7 @@ export class McpGatewayChannel<TContext> extends Disposable implements IServerCh
 					throw new Error('Invalid MCP gateway server selection');
 				}
 				const allowed = serverIds === undefined ? undefined : new Set(serverIds);
-				const selectServers = (servers: readonly IMcpGatewayServerDescriptor[]) => allowed ? servers.filter(server => allowed.has(server.id)) : servers;
+				const selectServers = (servers: readonly IMcpGatewayServerDescriptor[]) => servers.filter(server => allowed ? allowed.has(server.id) : !server.requiresExplicitSelection);
 				const brokerChannel = ipcChannelForContext(this._ipcServer, ctx);
 
 				// Fetch initial server list before creating the gateway (IPC is async, but the invoker interface is sync)

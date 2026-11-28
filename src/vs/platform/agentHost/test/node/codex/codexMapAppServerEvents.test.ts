@@ -795,12 +795,12 @@ suite('codexMapAppServerEvents', () => {
 	test('imageGeneration item maps to an image tool call lifecycle with its final prompt', () => {
 		const state = createCodexSessionMapState();
 		const startActions = mapItemStarted(state, {
-			item: { type: 'imageGeneration', id: 'image_1', status: 'in_progress', revisedPrompt: null, result: '', failure: null },
+			item: { type: 'imageGeneration', id: 'image_1', status: 'in_progress', revisedPrompt: null, result: '', failure: null, generationId: null },
 			threadId: 'thr_1', turnId: 'turn_a', startedAtMs: 0,
 		});
 		const toolCallId = state.itemToToolCall.get('image_1')!.toolCallId;
 		const completeActions = mapItemCompleted(state, {
-			item: { type: 'imageGeneration', id: 'image_1', status: 'completed', revisedPrompt: 'A watercolor fox', result: 'aW1hZ2U=', failure: null },
+			item: { type: 'imageGeneration', id: 'image_1', status: 'completed', revisedPrompt: 'A watercolor fox', result: 'aW1hZ2U=', failure: null, generationId: null },
 			threadId: 'thr_1', turnId: 'turn_a', completedAtMs: 0,
 		});
 		assert.deepStrictEqual({
@@ -826,6 +826,17 @@ suite('codexMapAppServerEvents', () => {
 		});
 	});
 
+	test('imageGeneration completes file-reference results without inline image data', () => {
+		const state = createCodexSessionMapState();
+		const item: Extract<ThreadItem, { type: 'imageGeneration' }> = { type: 'imageGeneration', id: 'image_file', status: 'completed', revisedPrompt: null, fileId: 'file_1', savedPath: '/generated/image.png', failure: null, generationId: null };
+		mapItemStarted(state, { item, threadId: 'thr_1', turnId: 'turn_a', startedAtMs: 0 });
+		const toolCallId = state.itemToToolCall.get(item.id)!.toolCallId;
+		assert.deepStrictEqual(mapItemCompleted(state, { item, threadId: 'thr_1', turnId: 'turn_a', completedAtMs: 0 }), [{
+			type: ActionType.ChatToolCallComplete, turnId: 'turn_a', toolCallId,
+			result: { success: true, pastTenseMessage: 'Generated image', content: [{ type: ToolResultContentType.Resource, uri: URI.file(item.savedPath!).toString(), contentType: 'image/png' }] },
+		}]);
+	});
+
 	for (const [status, result, success] of [
 		['completed', 'aW1hZ2U=', true],
 		['failed', 'aW1hZ2U=', false],
@@ -835,12 +846,12 @@ suite('codexMapAppServerEvents', () => {
 		test(`imageGeneration ${status} with ${result ? 'image data' : 'no image'} preserves its outcome without inventing a prompt`, () => {
 			const state = createCodexSessionMapState();
 			mapItemStarted(state, {
-				item: { type: 'imageGeneration', id: 'image_1', status: 'in_progress', revisedPrompt: null, result: '', failure: null },
+				item: { type: 'imageGeneration', id: 'image_1', status: 'in_progress', revisedPrompt: null, result: '', failure: null, generationId: null },
 				threadId: 'thr_1', turnId: 'turn_a', startedAtMs: 0,
 			});
 			const toolCallId = state.itemToToolCall.get('image_1')!.toolCallId;
 			const actions = mapItemCompleted(state, {
-				item: { type: 'imageGeneration', id: 'image_1', status, revisedPrompt: null, result, failure: null },
+				item: { type: 'imageGeneration', id: 'image_1', status, revisedPrompt: null, result, failure: null, generationId: null },
 				threadId: 'thr_1', turnId: 'turn_a', completedAtMs: 0,
 			});
 			assert.deepStrictEqual(actions, [{

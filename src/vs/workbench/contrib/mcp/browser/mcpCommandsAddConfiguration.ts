@@ -12,6 +12,8 @@ import { mnemonicButtonLabel } from '../../../../base/common/labels.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { autorunSelfDisposable } from '../../../../base/common/observable.js';
+import { getSignalCOAuthRedirectUri } from '../../../../base/common/oauth.js';
+import { isNative } from '../../../../base/common/platform.js';
 import { basename, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -27,8 +29,11 @@ import { IAllowedMcpServersService, IGalleryMcpServerConfiguration, RegistryType
 import { IMcpResourceScannerService } from '../../../../platform/mcp/common/mcpResourceScannerService.js';
 import { getCopilotGlobalMcpConfigurationError } from '../../../../platform/mcp/common/mcpCopilotGlobalConfiguration.js';
 import { McpResourceFormat } from '../../../../platform/mcp/common/mcpWorkspaceConfiguration.js';
+import { INativeHostService, isQuickBooksOAuthCredential } from '../../../../platform/native/common/native.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
+import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IQuickInputService, IQuickPickItem, QuickPickInput } from '../../../../platform/quickinput/common/quickInput.js';
 import { ISecretStorageService } from '../../../../platform/secrets/common/secrets.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
@@ -148,6 +153,14 @@ type McpSetupDestination = {
 	resource?: URI;
 };
 
+export function authorizeQuickBooksInBrowser<T>(instantiationService: IInstantiationService, authorize: (host: INativeHostService, operationId: string) => Promise<T>): Promise<T> {
+	const [nativeHost, progress] = instantiationService.invokeFunction(accessor => [accessor.get(INativeHostService), accessor.get(IProgressService)] as const);
+	const operationId = generateUuid();
+	return progress.withProgress({ location: ProgressLocation.Notification, title: localize('mcp.app.quickBooksSigningIn', "Complete QuickBooks sandbox sign-in in your browser"), cancellable: true },
+		() => authorize(nativeHost, operationId),
+		() => { void nativeHost.cancelQuickBooksSandboxAuthorization(operationId).catch(() => { /* the window or operation already closed */ }); });
+}
+
 export class McpAddConfigurationCommand {
 	constructor(
 		private readonly configurationTarget: McpAddConfigurationTarget | undefined,
@@ -177,6 +190,7 @@ export class McpAddConfigurationCommand {
 		@IDialogService private readonly _dialogService: IDialogService,
 		@IFileDialogService private readonly _fileDialogService: IFileDialogService,
 		@ISecretStorageService private readonly _secretStorageService: ISecretStorageService,
+		@IProductService private readonly _productService: IProductService,
 	) { }
 
 	private async getServerType(): Promise<AddConfigurationType | undefined> {
@@ -282,7 +296,7 @@ export class McpAddConfigurationCommand {
 		}))?.connection;
 	}
 
-	private async getAppConfig(appId?: string, connectInAssistant = false): Promise<{ app: ISignalCAppConnection; config: IMcpServerConfiguration } | undefined> {
+	private async getAppConfig(appId?: string, connectInAssistant = false): Promise<{ app: ISignalCAppConnection; config: IMcpServerConfiguration; quickBooksSandbox?: true } | undefined> {
 		const catalog: readonly ISignalCAppConnection[] = connectInAssistant ? [...Object.values(signalCDirectMailConnections), ...signalCAppConnections] : signalCAppConnections;
 		const connection = appId !== undefined ? catalog.find(app => app.id === appId) : (await this._quickInputService.pick(catalog.map(app => ({
 			label: app.name,
@@ -304,16 +318,24 @@ export class McpAddConfigurationCommand {
 			const selection = await this.pickAssistantAppConnection(connection);
 			if (!selection) { return undefined; }
 			if (selection !== 'new') {
-				await this._commandService.executeCommand(McpCommandIds.ServerOptions, selection.definition.id);
+				if (!isContributionDisabled(selection.enablement.get()) && McpConnectionState.needsSignIn(selection.connectionState.get())) {
+					await selection.start({ promptType: 'all-untrusted' });
+				} else {
+					await this._commandService.executeCommand(McpCommandIds.ServerOptions, selection.definition.id, { collectionId: selection.collection.id });
+				}
 				return undefined;
 			}
 		}
+		const httpsCallback = isNative && connectInAssistant && !connection.blocked && (connection.clientIdRequired || connection.supportsClientSecret) && !connection.requiresDesktopCallback
+			? getSignalCOAuthRedirectUri(this._productService) : undefined;
 		const { result } = await this._dialogService.prompt({
 			type: 'info', custom: true,
 			message: localize('mcp.app.review', "Connect {0}", connection.name),
-			detail: [connection.setup ?? localize('mcp.app.defaultSetup', "Add the official remote MCP server. Your browser opens for authorization when the server starts; permissions and availability are controlled by the app."), connection.blocked, connectInAssistant && !connection.blocked && localize('mcp.app.assistantProfile', "This connection will be available to Assistant in your current Signal-C profile."), connection.url].filter(Boolean).join('\n\n'),
+			detail: [connection.setup ?? localize('mcp.app.defaultSetup', "Add the official remote MCP server. Your browser opens for authorization when the server starts; permissions and availability are controlled by the app."), connection.blocked, connectInAssistant && !connection.blocked && localize('mcp.app.assistantProfile', "This connection will be available to Assistant in your current Signal-C profile."), httpsCallback && localize('mcp.app.httpsCallbackSetup', "If your OAuth client requires a public HTTPS callback, register {0} with the provider and choose Connect with HTTPS Callback.", httpsCallback), connection.url].filter(Boolean).join('\n\n'),
 			buttons: [
+				...(isNative && connection.id === 'quickbooks-local' ? [{ label: localize('mcp.app.quickBooksSandbox', "Sign In to Sandbox"), run: () => 'quickBooksSandbox' as const }] : []),
 				...(!connection.blocked ? [{ label: connection.local ? localize('mcp.app.localConnect', "Connect Local Server") : localize('mcp.app.connect', "Connect with OAuth"), run: () => 'connect' as const }] : []),
+				...(httpsCallback ? [{ label: localize('mcp.app.connectHttpsCallback', "Connect with HTTPS Callback"), run: () => 'https' as const }] : []),
 				{ label: localize('mcp.app.guide', "Open Setup Guide"), run: () => 'guide' as const },
 			],
 			cancelButton: true,
@@ -327,13 +349,16 @@ export class McpAddConfigurationCommand {
 			if (this.configurationTarget) { throw new Error(localize('mcp.app.localTarget', "This app runs on the local machine and must use local user configuration. Run Signal-C: Connect App without an explicit workspace or agent-host target.")); }
 			const entrypoint = await this._fileDialogService.showOpenDialog({ title: localize('mcp.app.localEntrypoint', "Select the built MCP server JavaScript entrypoint"), canSelectFiles: true, canSelectFolders: false, canSelectMany: false, availableFileSystems: [Schemas.file], filters: [{ name: 'JavaScript', extensions: ['js', 'cjs', 'mjs'] }] });
 			if (entrypoint?.length !== 1 || entrypoint[0].scheme !== Schemas.file) { return undefined; }
+			if (result === 'quickBooksSandbox') {
+				return { app: connection, config: { type: McpServerType.LOCAL, command: connection.local.command, args: [entrypoint[0].fsPath] }, quickBooksSandbox: true };
+			}
 			const tokenStore = await this._fileDialogService.showOpenDialog({ title: localize('mcp.app.localTokenStore', "Select the private OAuth token-store file (its contents stay with the MCP server)"), canSelectFiles: true, canSelectFolders: false, canSelectMany: false, availableFileSystems: [Schemas.file] });
 			if (tokenStore?.length !== 1 || tokenStore[0].scheme !== Schemas.file) { return undefined; }
 			return { app: connection, config: { type: McpServerType.LOCAL, command: connection.local.command, args: [entrypoint[0].fsPath], env: { [connection.local.tokenStoreVariable]: tokenStore[0].fsPath } } };
 		}
 		if (!connection.url) { throw new Error(localize('mcp.app.missingUrl', "This app has no published MCP server endpoint.")); }
 		let clientId = connection.publicClientId;
-		if (connection.clientIdRequired) {
+		if (connection.clientIdRequired || result === 'https') {
 			clientId = await this._quickInputService.input({
 				title: localize('mcp.app.clientId.title', "{0} OAuth App Client ID", connection.name),
 				prompt: localize('mcp.app.clientId.prompt', "Enter your registered app's public client ID. Client secrets and account tokens belong in the MCP credential store, not this field."),
@@ -344,8 +369,17 @@ export class McpAddConfigurationCommand {
 		}
 		return {
 			app: connection,
-			config: { type: McpServerType.REMOTE, transport: 'http', url: connection.url, ...(connection.headers ? { headers: { ...connection.headers } } : {}), ...(clientId ? { oauth: { clientId: clientId.trim() } } : {}) },
+			config: { type: McpServerType.REMOTE, transport: connection.transport ?? 'http', url: connection.url, ...(connection.headers ? { headers: { ...connection.headers } } : {}), ...(clientId ? { oauth: { clientId: clientId.trim(), ...(result === 'https' ? { useHttpsCallback: true } : {}) } } : {}) },
 		};
+	}
+
+	private async signInToQuickBooksSandbox(): Promise<string | undefined> {
+		const validateInput = async (value: string) => isQuickBooksOAuthCredential(value.trim()) ? undefined : localize('mcp.app.quickBooksCredentialInvalid', "Enter the value from the Development keys for your Intuit app.");
+		const clientId = (await this._quickInputService.input({ title: localize('mcp.app.quickBooksClient', "QuickBooks Development Client ID"), ignoreFocusLost: true, validateInput }))?.trim();
+		if (!clientId) { return undefined; }
+		const secret = (await this._quickInputService.input({ title: localize('mcp.app.quickBooksSecret', "QuickBooks Development Client Secret"), password: true, ignoreFocusLost: true, validateInput }))?.trim();
+		if (!secret) { return undefined; }
+		return authorizeQuickBooksInBrowser(this._instantiationService, (host, operationId) => host.authorizeQuickBooksSandbox(clientId, secret, operationId));
 	}
 
 	private async getAppClientSecret(connection: ISignalCAppConnection | undefined, config: IMcpServerConfiguration): Promise<{ key: string; value: string } | undefined> {
@@ -692,11 +726,13 @@ export class McpAddConfigurationCommand {
 		let inputs: IMcpServerVariable[] | undefined;
 		let inputValues: Record<string, string> | undefined;
 		let destination: McpSetupDestination | undefined;
+		let quickBooksSandbox = false;
 		switch (serverType) {
 			case AddConfigurationType.App: {
 				const details = await this.getAppConfig(connectApp ? appId : undefined, connectInAssistant);
 				config = details?.config;
 				connection = details?.app;
+				quickBooksSandbox = details?.quickBooksSandbox === true;
 				suggestedName = connection?.id;
 				if (connection?.local || connectInAssistant) { destination = { installTarget: { kind: 'local', target: ConfigurationTarget.USER_LOCAL }, format: McpResourceFormat.Vscode }; }
 				break;
@@ -767,6 +803,13 @@ export class McpAddConfigurationCommand {
 		}
 
 		const { target } = installTarget;
+		if (quickBooksSandbox && config.type === McpServerType.LOCAL && connection?.local) {
+			const allowed = this._allowedMcpServersService.isAllowed({ name, config, inputs });
+			if (allowed !== true) { throw new Error(allowed.value); }
+			const tokenStore = await this.signInToQuickBooksSandbox();
+			if (!tokenStore) { return; }
+			config = { ...config, env: { ...config.env, [connection.local.tokenStoreVariable]: tokenStore } };
+		}
 		const installable = { name, config, inputs };
 		if (destination.format === McpResourceFormat.CopilotGlobal && destination.resource) {
 			const resource = destination.resource;

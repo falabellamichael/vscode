@@ -23,6 +23,7 @@ import { ISessionsService } from '../sessionsService.js';
 import { ISessionHost } from '../../../../services/sessions/browser/sessionHost.js';
 import { ISessionsProvidersService } from '../sessionsProvidersService.js';
 import { INestedChatWorkspace, INestedChatWorkspaceSupport, NestedChatWorkspaceError } from '../../common/sessionsProvider.js';
+import { withSessionOutputTypeMetadata } from '../../../chat/common/sessionOutputType.js';
 import { getChatHarness, IChat, isSessionCreated, SessionStatus, ISession } from '../../../../services/sessions/common/session.js';
 import { getNoWorkspaceChoicePresentation } from './noWorkspaceChoice.js';
 import { INestedChatFolderSources, isSameNestedChatWorkspace, NestedChatWorkspaceControls } from './nestedChatWorkspacePicker.js';
@@ -498,8 +499,10 @@ export class NewChatInSessionWidget extends Disposable {
 			}
 
 			userInteraction?.handoff(activeSession, activeChat);
+			const metadata = withSessionOutputTypeMetadata(undefined, attachedContext);
 			await this.sessionsManagementService.sendRequest(activeSession, activeChat, {
 				query, attachedContext, background,
+				...(metadata ? { metadata } : {}),
 				...(userInteraction ? { onDidCreateResponse: userInteraction.onDidCreateResponse } : {}),
 			});
 			this._appliedWorkspace = undefined;

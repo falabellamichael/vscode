@@ -51,7 +51,7 @@
 	height: 1.4em;
 	flex: none;
 	margin-bottom: var(--vscode-spacing-size80);
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.4;
 }
@@ -165,6 +165,7 @@
 	border: var(--vscode-strokeThickness) solid var(--vscode-contrastBorder, color-mix(in srgb, var(--vscode-foreground) 10%, transparent));
 	border-radius: var(--vscode-cornerRadius-medium);
 	background-color: color-mix(in srgb, var(--vscode-foreground) 3%, var(--session-view-background, var(--vscode-editor-background)));
+	color: var(--session-view-foreground, var(--vscode-foreground));
 }
 
 :is(.hc-black, .hc-light) .new-session-getting-started-tip-below .chat-input-notice {
@@ -178,6 +179,152 @@
 	flex: 0 1 auto;
 	min-height: 0;
 	margin: 0 0 var(--vscode-spacing-size200);
+}
+
+.new-chat-session-options .new-chat-session-options-details {
+	display: flex;
+	flex: 0 0 auto;
+	flex-wrap: nowrap;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+	width: max-content;
+	margin-left: var(--vscode-spacing-size80);
+	interpolate-size: allow-keywords;
+	overflow: clip;
+	transition: width 180ms ease-out, margin-left 180ms ease-out, opacity 180ms ease-out, display 180ms allow-discrete;
+}
+
+.new-chat-session-options .new-chat-session-options-details[hidden] {
+	display: none;
+	width: 0;
+	margin-left: 0;
+	opacity: 0;
+}
+
+@starting-style {
+	.new-chat-session-options .new-chat-session-options-details:not([hidden]) {
+		width: 0;
+		margin-left: 0;
+		opacity: 0;
+	}
+}
+
+.monaco-reduce-motion .new-chat-session-options .new-chat-session-options-details {
+	transition: none;
+}
+
+/* Intrinsic sizing must measure the final expanded width, not the reveal transition. */
+.chat-input-picker-measurement-host .new-chat-session-options .new-chat-session-options-details {
+	transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.new-chat-session-options .new-chat-session-options-details {
+		transition: none;
+	}
+}
+
+.new-chat-session-options .monaco-button.new-chat-session-options-toggle {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	width: var(--vscode-spacing-size240);
+	height: var(--vscode-spacing-size240);
+	margin-left: var(--vscode-spacing-size80);
+	padding: 0;
+	border: 0;
+	border-radius: var(--vscode-cornerRadius-small);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
+	font-size: var(--vscode-codiconFontSize-compact);
+	cursor: pointer;
+}
+
+/*
+ * The disclosure toggle sets its `hidden` attribute when the experimental composer layout is off
+ * (or a screen reader is active). The base `.monaco-text-button { display: flex }` rule would
+ * otherwise override the user-agent `[hidden]` behavior and keep the chevron visible, changing the
+ * layout when the feature is disabled. Honor `hidden` explicitly.
+ */
+.new-chat-widget-container .monaco-button.new-chat-session-options-toggle[hidden] {
+	display: none;
+}
+
+.new-chat-session-options .monaco-button.new-chat-session-options-toggle:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
+}
+
+.new-chat-session-options .monaco-button.new-chat-session-options-toggle:focus:not(:focus-visible),
+.new-chat-widget-container .new-chat-session-options .action-label:focus:not(:focus-visible) {
+	outline: none;
+}
+
+.new-chat-session-options .monaco-button.new-chat-session-options-toggle:focus-visible,
+.new-chat-widget-container .new-chat-session-options .action-label:focus-visible,
+.monaco-workbench .new-chat-widget-container .new-chat-session-options .monaco-action-bar .action-item .action-label:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: calc(-1 * var(--vscode-strokeThickness));
+}
+
+.new-chat-widget-container .new-chat-session-options :is(.sessions-chat-picker-slot, .new-chat-repo-config-container) .action-label:not(.separator) {
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	height: var(--vscode-spacing-size240);
+	min-height: var(--vscode-spacing-size240);
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size60);
+	background: transparent;
+	border: var(--vscode-strokeThickness) solid transparent;
+	border-radius: var(--vscode-cornerRadius-small);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
+	font-size: var(--vscode-fontSize-label1);
+	line-height: var(--vscode-spacing-size160);
+}
+
+.new-chat-widget-container .new-chat-session-options :is(.sessions-chat-picker-slot, .new-chat-repo-config-container) .action-label:not([aria-disabled='true'], [aria-readonly='true']):is(:hover, [aria-expanded='true']) {
+	background: var(--vscode-toolbar-hoverBackground);
+	border-color: var(--vscode-contrastBorder, transparent);
+	color: var(--session-view-foreground, var(--vscode-foreground));
+}
+
+.new-chat-widget-container .new-chat-session-options :is(.sessions-chat-picker-slot, .new-chat-repo-config-container) .action-label:not([aria-disabled='true'], [aria-readonly='true']):active,
+.new-chat-session-options .monaco-button.new-chat-session-options-toggle:active {
+	background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground));
+}
+
+.new-chat-widget-container .new-chat-session-options .new-chat-repo-config-container .monaco-action-bar .actions-container {
+	gap: var(--vscode-spacing-size80);
+}
+
+.new-chat-widget-container .new-chat-session-options .new-chat-repo-config-container .action-item {
+	margin: 0;
+}
+
+.new-chat-session-options .action-item.repository-config-separator,
+.new-chat-session-options .sessions-workspace-category-picker-slot .sessions-chat-dropdown-chevron {
+	display: none;
+}
+
+.new-chat-session-options .sessions-chat-dropdown-label {
+	margin-left: 0;
+}
+
+/* Collapsed icon rail: keep the repository and harness pickers as icons only, so they
+	stay reachable without their labels taking up space. The workspace picker keeps its
+	label as the composer's anchor. */
+.new-chat-session-options .new-chat-session-options-details.collapsed-icon-rail .sessions-chat-dropdown-label {
+	display: none;
+}
+
+.new-chat-session-options .new-chat-repo-config-container {
+	flex-shrink: 0;
+}
+
+.new-chat-session-options > .sessions-chat-picker-slot {
+	min-width: 0;
 }
 
 .new-chat-widget-content {
@@ -213,7 +360,7 @@
 }
 
 .new-session-welcome-message-title {
-	color: var(--vscode-foreground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 	font-size: var(--vscode-fontSize-heading1);
 	font-weight: var(--vscode-fontWeight-semiBold);
 	line-height: 1.4;
@@ -229,7 +376,7 @@
 	padding-inline: var(--vscode-spacing-size40);
 	border: var(--vscode-strokeThickness) solid var(--vscode-contrastBorder, transparent);
 	border-radius: var(--vscode-cornerRadius-circle);
-	background-color: var(--vscode-descriptionForeground);
+	background-color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	pointer-events: none;
 	transform: translate(-50%, -50%);
 }
@@ -309,7 +456,7 @@
 .new-chat-widget-container .new-chat-bottom-container .new-chat-repo-config-container .action-label:not(.separator):is(:hover, [aria-expanded='true']) {
 	background-image: unset !important;
 	background-color: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground)) !important;
-	color: var(--vscode-foreground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 
 	> .codicon {
 		color: inherit;
@@ -432,7 +579,7 @@
 	align-items: center;
 	padding: 0 var(--vscode-spacing-size40);
 	font-size: var(--vscode-fontSize-label2, 11px);
-	color: var(--vscode-icon-foreground);
+	color: var(--session-view-foreground, var(--vscode-icon-foreground));
 	background-color: var(--session-view-background);
 }
 
@@ -553,7 +700,7 @@
 }
 
 .sessions-workspace-category-picker-label {
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	font-size: var(--vscode-fontSize-body2);
 }
 
@@ -578,7 +725,7 @@
 	border: var(--vscode-strokeThickness) solid var(--vscode-commandCenter-inactiveBorder, var(--vscode-widget-border));
 	border-radius: var(--vscode-cornerRadius-circle);
 	box-sizing: border-box;
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	font-size: var(--vscode-fontSize-body1);
 	line-height: var(--vscode-spacing-size160);
 }
@@ -591,7 +738,7 @@
 	background-color: var(--session-view-background);
 	background-image: linear-gradient(var(--vscode-toolbar-hoverBackground), var(--vscode-toolbar-hoverBackground));
 	border-color: var(--vscode-commandCenter-activeBorder, var(--vscode-focusBorder));
-	color: var(--vscode-foreground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 }
 
 .sessions-chat-picker-slot.sessions-workspace-category-picker-slot .action-label:focus-visible {

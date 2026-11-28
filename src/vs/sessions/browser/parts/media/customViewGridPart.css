@@ -106,3 +106,9 @@
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 }
+
+/* A custom view's activity bar floats at the right edge of its node, like the
+	Session Activity Bar beside a chat, clear of the header. */
+.monaco-workbench .custom-view-node > .session-activity-bar.custom-view-activity-bar.docked {
+	top: var(--vscode-spacing-size80, 8px);
+}

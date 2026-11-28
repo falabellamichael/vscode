@@ -27,6 +27,7 @@ import { ModelRouterEnabledSettingId, ModelRouterSkillName } from '../../../../.
 import { ICommandService } from '../../../../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../../../../platform/configuration/common/configuration.js';
 import { IOpenerService } from '../../../../../../../platform/opener/common/opener.js';
+import { REACH_CHAT_PROVIDER_ID } from '../../../../../../../platform/native/common/native.js';
 import { getManagedSupportUrl, IManagedSettingsService } from '../../../../../../../platform/policy/common/copilotManagedSettings.js';
 import { IProductService } from '../../../../../../../platform/product/common/productService.js';
 import { ITelemetryService } from '../../../../../../../platform/telemetry/common/telemetry.js';
@@ -452,11 +453,15 @@ export class ModelPickerWidget extends Disposable {
 	}
 
 	private _requiresSetup(): boolean {
-		return modelPickerRequiresSetup({
+		return this.usesReachAccount || modelPickerRequiresSetup({
 			entitlement: this._entitlementService.entitlement,
 			anonymous: this._entitlementService.anonymous,
 			hasByokModels: this._entitlementService.hasByokModels,
 		});
+	}
+
+	get usesReachAccount(): boolean {
+		return this._delegate.getSessionType?.() === `agent-host-${REACH_CHAT_PROVIDER_ID}`;
 	}
 
 	/**
@@ -497,7 +502,7 @@ export class ModelPickerWidget extends Disposable {
 	 * refreshes the picker.
 	 */
 	private _requestSetup(): void {
-		this._commandService.executeCommand(CHAT_SETUP_ACTION_ID);
+		this._commandService.executeCommand(this.usesReachAccount ? 'workbench.action.chat.connectReach' : CHAT_SETUP_ACTION_ID);
 	}
 
 	render(container: HTMLElement): void {
@@ -607,8 +612,8 @@ export class ModelPickerWidget extends Disposable {
 	 * given a tab.
 	 */
 	private _providerPlaceholders(models: readonly ILanguageModelChatMetadataAndIdentifier[], { reason, activating }: IModelPickerAvailability, onLinkClick: (uri: URI) => void): IModelPickerProviderPlaceholder[] {
-		const vendor = COPILOT_VENDOR_ID;
-		const label = getLanguageModelProviderDisplayName(this._languageModelsService, COPILOT_VENDOR_ID);
+		const vendor = this.usesReachAccount ? `agent-host-${REACH_CHAT_PROVIDER_ID}` : COPILOT_VENDOR_ID;
+		const label = getLanguageModelProviderDisplayName(this._languageModelsService, vendor);
 		if (reason === ModelPickerUnavailableReason.Restricted) {
 			return [{
 				vendor,
@@ -625,6 +630,13 @@ export class ModelPickerWidget extends Disposable {
 			}];
 		}
 		if (reason === ModelPickerUnavailableReason.SetupRequired) {
+			if (this.usesReachAccount) {
+				return [{
+					vendor, label,
+					message: localize('chat.modelPicker.reachModels', "Connect to load your REACH chat models."),
+					action: { label: localize('chat.modelPicker.connectReach', "Connect REACH"), run: () => this._requestSetup() },
+				}];
+			}
 			return [{
 				vendor,
 				label,
@@ -961,7 +973,7 @@ export class ModelPickerWidget extends Disposable {
 				? localize('chat.modelPicker.activating', "Activating...")
 				: genericNoModels
 					? localize('chat.modelPicker.noModels', "No models available")
-					: (name ?? this._getFusionAutoName(models) ?? localize('chat.modelPicker.fusion', "Copilot Fusion"));
+					: (name ?? (this.usesReachAccount ? localize('chat.modelPicker.reachAuto', "Auto") : this._getFusionAutoName(models) ?? localize('chat.modelPicker.fusion', "Copilot Fusion")));
 		const showModelLabel = singleButton || ((!comparisonSummary || noModelsAvailable) && (!compact || !modelIcon || noModelsAvailable));
 		if (showModelLabel) {
 			nameChildren.push(dom.$('span.chat-input-picker-label', undefined, modelLabel));
@@ -995,7 +1007,7 @@ export class ModelPickerWidget extends Disposable {
 		const ariaLabel = restrictedMode
 			? localize('chat.modelPicker.ariaLabelRestricted', "Models, unavailable while in Restricted mode")
 			: setupRequired
-				? localize('chat.modelPicker.ariaLabelSetupRequired', "Models, sign in to use Copilot")
+				? (this.usesReachAccount ? localize('chat.modelPicker.ariaLabelReachSetup', "Models, connect your REACH account") : localize('chat.modelPicker.ariaLabelSetupRequired', "Models, sign in to use Copilot"))
 				: localize('chat.modelPicker.ariaLabel', "Models, {0}", modelLabel);
 		this._domNode.ariaLabel = ariaLabel;
 		this._nameButton.ariaLabel = ariaLabel;

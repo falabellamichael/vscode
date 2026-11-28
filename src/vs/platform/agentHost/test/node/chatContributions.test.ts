@@ -2981,6 +2981,15 @@ suite('AgentHostChatContributions', () => {
 		assert.deepStrictEqual((result.instructions ?? []).map(instruction => ['<rich_plan_markdown>', '<workspace_info>', '<terminal_chat>'].find(tag => instruction.includes(tag)) ?? instruction), ['<rich_plan_markdown>', '<workspace_info>', '<terminal_chat>', 'rename instruction']);
 	});
 
+	test('omits the rename instruction when the sending provider has no rename tool', async () => {
+		const contributions = createBuiltInContributions(disposables, undefined, true);
+		const turn = { ...outgoingTurn('rename'), session: contributions.session, chat: buildDefaultChatUri(contributions.session) };
+		const enabled = await contributions.service.outgoingTurn(turn);
+		assert.ok(enabled.instructions?.includes('rename instruction'));
+		const disabled = await contributions.service.outgoingTurn({ ...turn, renameChatTool: false });
+		assert.deepStrictEqual(disabled.instructions ?? [], enabled.instructions!.filter(instruction => instruction !== 'rename instruction'));
+	});
+
 	test('runs built-in outgoing-turn contributions in the original sequence', async () => {
 		const contributions = createBuiltInContributions(disposables, undefined, true);
 		configureRemoteSessionReply(contributions.stateManager, contributions.session);

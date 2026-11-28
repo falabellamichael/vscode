@@ -178,6 +178,11 @@ export class ElectronAgentHostStarter extends Disposable implements IAgentHostSt
 			codexAgentEnabled: this._configurationService.getValue<boolean>(AgentHostCodexAgentEnabledSettingId),
 		}, process.env);
 		Object.assign(sdkEnv, buildDevinAgentEnvironment(this._configurationService, process.env));
+		// Forward a configured Cohere key; an inherited env value wins on collision.
+		const cohereApiKey = this._configurationService.getValue<string>('chat.agentHost.cohere.apiKey');
+		if (cohereApiKey && !sdkEnv['COHERE_API_KEY']) {
+			sdkEnv['COHERE_API_KEY'] = cohereApiKey;
+		}
 
 		// Translate `chat.agentHost.otel.*` settings into the env vars consumed by
 		// the agent host process. Any value already present on `process.env` wins

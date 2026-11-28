@@ -15,6 +15,7 @@ import { localize } from '../../../../nls.js';
 import { Message, MessageAttachment, MessageAttachmentKind, MessageKind } from '../../../../platform/agentHost/common/state/protocol/state.js';
 import { IChatDraft } from '../../chat/common/attachments/chatDraft.js';
 import { coerceImageBuffer } from '../../chat/common/chatImageExtraction.js';
+import { withSessionOutputTypeMetadata } from '../../chat/common/sessionOutputType.js';
 
 /** Captures ephemeral context now; only host-readable files and folders may remain references. */
 export async function captureScheduledChatRequest(
@@ -25,7 +26,7 @@ export async function captureScheduledChatRequest(
 ): Promise<Message> {
 	const positions = new PositionOffsetTransformer(input.inputText);
 	const attachments: MessageAttachment[] = [];
-	for (const entry of input.attachments) {
+	for (const entry of [...input.attachments, ...(input.sendContext ?? [])]) {
 		const reference = input.references?.find(reference => reference.id === entry.id);
 		const range = reference?.range ?? (entry.range ? positions.getRange(new OffsetRange(entry.range.start, entry.range.endExclusive)) : undefined);
 		const common = {
@@ -75,7 +76,8 @@ export async function captureScheduledChatRequest(
 			throw new Error(localize('sendLater.unsupportedAttachment', "The attachment '{0}' cannot be saved for later. Remove it or send this request now.", entry.name));
 		}
 	}
-	return { text: input.inputText, origin: { kind: MessageKind.User }, ...(attachments.length ? { attachments } : {}) };
+	const metadata = withSessionOutputTypeMetadata(undefined, input.sendContext);
+	return { text: input.inputText, origin: { kind: MessageKind.User }, ...(attachments.length ? { attachments } : {}), ...(metadata ? { _meta: metadata } : {}) };
 }
 
 function assertLocalResource(uri: URI): void {

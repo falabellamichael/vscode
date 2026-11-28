@@ -161,7 +161,7 @@ suite('AgentHostSavedChatService', () => {
 					{ type: 'userMessage', id: 'prompt', clientId: null, content: [{ type: 'text', text: 'Saved question', text_elements: [] }] },
 					{ type: 'agentMessage', id: 'answer', text: 'Saved answer', phase: 'final_answer', memoryCitation: null, delivery: null, questions: null },
 					{ type: 'webSearch', id: 'search', query: 'VS Code', action: null, results: null },
-					{ type: 'imageGeneration', id: 'image', status: 'completed', revisedPrompt: 'Draw a square', result: 'aW1hZ2U=', failure: null },
+					{ type: 'imageGeneration', id: 'image', status: 'completed', revisedPrompt: 'Draw a square', result: 'aW1hZ2U=', failure: null, generationId: null },
 					{ type: 'fileChange', id: 'patch', changes: [], status: 'completed' },
 					{ type: 'contextCompaction', id: 'compaction' },
 				],

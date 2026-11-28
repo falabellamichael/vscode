@@ -134,6 +134,39 @@ suite('Sessions - Titlebar Part', () => {
 		assert.strictEqual(part.element.style.color, 'rgb(221, 238, 255)');
 	});
 
+	test('toggles light class, flattens translucent backgrounds, guards low-contrast foregrounds and uses titleBar foreground on toolbar icons', () => {
+		const theme = ColorThemeData.createUnloadedTheme('vs-dark', {
+			'editor.background': '#1e1e1e',
+			'agentsPanel.foreground': '#f0f0f0',
+			'titleBar.activeBackground': '#ffffff',
+			'titleBar.activeForeground': '#111111',
+			'titleBar.inactiveBackground': '#3c3c3c99',
+			'titleBar.inactiveForeground': '#cccccc',
+			'icon.foreground': '#ffffff',
+		});
+		const service = new TestThemeService(theme);
+		const { part } = createTitlebar(ModernUIDensity.Default, service);
+		const container = append(mainWindow.document.body, $('.monaco-workbench.agent-sessions-workbench'));
+		store.add(toDisposable(() => container.remove()));
+		const style = append(mainWindow.document.head, $('style'));
+		store.add(toDisposable(() => style.remove()));
+		style.textContent = '.monaco-workbench { --vscode-titleBar-activeForeground: rgb(17, 17, 17); --vscode-titleBar-inactiveForeground: rgb(204, 204, 204); --vscode-icon-foreground: rgb(255, 255, 255); }';
+		part.create(append(container, $('.part.titlebar')));
+
+		part.updateStyles();
+		assert.strictEqual(part.element.classList.contains('light'), true);
+		assert.strictEqual(part.element.style.backgroundColor, 'rgb(255, 255, 255)');
+		assert.strictEqual(part.element.style.color, 'rgb(17, 17, 17)');
+
+		const toolbarIcon = append(append(append(append(append(part.element.querySelector('.titlebar-right')!, $('.titlebar-actions-container')), $('.monaco-action-bar')), $('.actions-container')), $('.action-item')), $('.action-label.codicon'));
+		assert.strictEqual(mainWindow.getComputedStyle(toolbarIcon).color, 'rgb(17, 17, 17)');
+
+		Reflect.get(part, 'onBlur').call(part);
+		assert.strictEqual(part.element.classList.contains('light'), false);
+		assert.strictEqual(part.element.style.backgroundColor, 'rgb(50, 50, 51)');
+		assert.strictEqual(mainWindow.getComputedStyle(toolbarIcon).color, 'rgb(204, 204, 204)');
+	});
+
 	test('uses 44px in Default and 35px in Compact at startup', () => {
 		const heights = [ModernUIDensity.Default, ModernUIDensity.Compact].map(density => {
 			const { part } = createTitlebar(density);

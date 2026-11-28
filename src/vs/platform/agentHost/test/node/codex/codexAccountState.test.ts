@@ -13,11 +13,11 @@ suite('CodexAccountState', () => {
 
 	test('maps ChatGPT identities as human accounts', () => {
 		assert.deepStrictEqual(
-			codexAccountStateFromResponse({ account: { type: 'chatgpt', email: 'private@example.com', planType: 'plus' }, requiresOpenaiAuth: true, workspaceRouting: null }),
+			codexAccountStateFromResponse({ account: { type: 'chatgpt', email: 'private@example.com', planType: 'plus', workspaceName: null }, requiresOpenaiAuth: true, workspaceRouting: null }),
 			{ usageSource: 'openai', status: 'signedIn', authType: 'chatgpt', email: 'private@example.com', planType: 'plus', requiresOpenaiAuth: true },
 		);
 		assert.deepStrictEqual(
-			codexAccountStateFromResponse({ account: { type: 'chatgpt', email: null, planType: 'team' }, requiresOpenaiAuth: true, workspaceRouting: null }),
+			codexAccountStateFromResponse({ account: { type: 'chatgpt', email: null, planType: 'team', workspaceName: null }, requiresOpenaiAuth: true, workspaceRouting: null }),
 			{ usageSource: 'openai', status: 'signedIn', authType: 'chatgpt', email: undefined, planType: 'team', requiresOpenaiAuth: true },
 		);
 	});

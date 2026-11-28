@@ -3,7 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable, DisposableMap } from '../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, toDisposable } from '../../../base/common/lifecycle.js';
+import { mainWindow } from '../../../base/browser/window.js';
 import * as nls from '../../../nls.js';
 import { extHostNamedCustomer, IExtHostContext } from '../../services/extensions/common/extHostCustomers.js';
 import { AuthenticationSession, AuthenticationSessionsChangeEvent, getDynamicAuthenticationProviderId, IAuthenticationProvider, IAuthenticationService, IAuthenticationExtensionsService, AuthenticationSessionAccount, IAuthenticationProviderSessionOptions, isAuthenticationWwwAuthenticateRequest, IAuthenticationConstraint, IAuthenticationWwwAuthenticateRequest, withoutWorkbenchOnlySessionOptions } from '../../services/authentication/common/authentication.js';
@@ -25,8 +26,10 @@ import { ILogService } from '../../../platform/log/common/log.js';
 import { ExtensionHostKind } from '../../services/extensions/common/extensionHostKind.js';
 import { Dto, Proxied } from '../../services/extensions/common/proxyIdentifier.js';
 import { IURLService } from '../../../platform/url/common/url.js';
-import { DeferredPromise, raceTimeout } from '../../../base/common/async.js';
-import { fetchAuthorizationServerMetadata, IAuthorizationTokenResponse } from '../../../base/common/oauth.js';
+import { DeferredPromise, disposableTimeout } from '../../../base/common/async.js';
+import { CancellationToken } from '../../../base/common/cancellation.js';
+import { DEFAULT_AUTH_FLOW_PORT, fetchAuthorizationServerMetadata, getSignalCOAuthRedirectUri, IAuthorizationTokenResponse, isSignalCOAuthScheme } from '../../../base/common/oauth.js';
+import { isNative } from '../../../base/common/platform.js';
 import { IDynamicAuthenticationProviderStorageService } from '../../services/authentication/common/dynamicAuthenticationProviderStorage.js';
 import { IClipboardService } from '../../../platform/clipboard/common/clipboardService.js';
 import { IQuickInputService } from '../../../platform/quickinput/common/quickInput.js';
@@ -133,6 +136,7 @@ export class MainThreadAuthentication extends Disposable implements MainThreadAu
 	private readonly _proxy: Proxied<ExtHostAuthenticationShape>;
 
 	private readonly _registrations = this._register(new DisposableMap<string, { emitter: Emitter<AuthenticationSessionsChangeEvent>; dispose(): void }>());
+	private readonly _oauthCallbacks = this._register(new DisposableStore());
 	private _sentProviderUsageEvents = new Set<string>();
 	private _suppressUnregisterEvent = false;
 
@@ -194,6 +198,10 @@ export class MainThreadAuthentication extends Disposable implements MainThreadAu
 				} else if (serverMetadata.client_id_metadata_document_supported) {
 					clientId = this.productService.authClientIdMetadataUrl;
 				}
+				const tokenEndpointAuthMethod = clientDetails?.clientId === clientId && clientDetails?.clientSecret === clientSecret
+					? clientDetails?.tokenEndpointAuthMethod
+					: undefined;
+				const redirectUri = isNative ? getSignalCOAuthRedirectUri(this.productService) : undefined;
 				return await this._proxy.$registerDynamicAuthProvider(
 					authorizationServer,
 					serverMetadata,
@@ -201,7 +209,9 @@ export class MainThreadAuthentication extends Disposable implements MainThreadAu
 					clientId,
 					clientSecret,
 					initialTokens,
-					authProviderId
+					authProviderId,
+					tokenEndpointAuthMethod,
+					redirectUri ? { redirectUri, windowId: mainWindow.vscodeWindowId } : undefined,
 				);
 			},
 			createXaa: async (issuer) => {
@@ -312,23 +322,46 @@ export class MainThreadAuthentication extends Disposable implements MainThreadAu
 		return this.authenticationService.removeSession(providerId, sessionId);
 	}
 
-	async $waitForUriHandler(expectedUri: UriComponents): Promise<UriComponents> {
-		const deferredPromise = new DeferredPromise<UriComponents>();
-		const disposable = this.urlService.registerHandler({
-			handleURL: async (uri: URI) => {
-				if (uri.scheme !== expectedUri.scheme || uri.authority !== expectedUri.authority || uri.path !== expectedUri.path) {
-					return false;
-				}
-				deferredPromise.complete(uri);
-				disposable.dispose();
-				return true;
-			}
-		});
-		const result = await raceTimeout(deferredPromise.p, 5 * 60 * 1000); // 5 minutes
-		if (!result) {
-			throw new Error('Timed out waiting for URI handler');
+	async $waitForUriHandler(expectedUri: UriComponents, token: CancellationToken): Promise<UriComponents> {
+		if (token.isCancellationRequested || this._oauthCallbacks.isDisposed) {
+			throw new CancellationError();
 		}
-		return await deferredPromise.p;
+		const expectedQuery = new URLSearchParams(expectedUri.query);
+		const expectedNonces = expectedQuery.getAll('nonce');
+		const expectedWindowId = expectedQuery.get('windowId');
+		if (expectedNonces.length !== 1 || !expectedNonces[0]) {
+			throw new Error('OAuth callback URI needs one nonce');
+		}
+		const result = new DeferredPromise<UriComponents>();
+		const callback = this._oauthCallbacks.add(new DisposableStore());
+		try {
+			callback.add(toDisposable(() => { void result.cancel(); }));
+			callback.add(token.onCancellationRequested(() => { void result.cancel(); }));
+			disposableTimeout(() => { void result.error(new Error('Timed out waiting for OAuth callback')); }, 5 * 60 * 1000, callback);
+			callback.add(this.urlService.registerHandler({
+				handleURL: async uri => {
+					if (result.isSettled || token.isCancellationRequested || uri.scheme !== expectedUri.scheme || uri.authority !== expectedUri.authority || uri.path !== expectedUri.path) {
+						return false;
+					}
+					const query = new URLSearchParams(uri.query);
+					const nonces = query.getAll('nonce');
+					if (nonces.length !== 1 || nonces[0] !== expectedNonces[0]) {
+						return false;
+					}
+					if (expectedWindowId) {
+						const windowIds = query.getAll('windowId');
+						if (windowIds.length !== 1 || windowIds[0] !== expectedWindowId) {
+							return false;
+						}
+					}
+					await result.complete(uri);
+					return true;
+				}
+			}));
+			return await result.p;
+		} finally {
+			this._oauthCallbacks.delete(callback);
+		}
 	}
 
 	$showContinueNotification(message: string): Promise<boolean> {
@@ -363,14 +396,14 @@ export class MainThreadAuthentication extends Disposable implements MainThreadAu
 			supportedAuthorizationServers: [details.authorizationServer],
 			resourceServer: details.resourceServer,
 		});
-		await this.dynamicAuthProviderStorageService.storeClientRegistration(details.id, URI.revive(details.authorizationServer).toString(true), details.clientId, details.clientSecret, details.label);
+		await this.dynamicAuthProviderStorageService.storeClientRegistration(details.id, URI.revive(details.authorizationServer).toString(true), details.clientId, details.clientSecret, details.label, details.tokenEndpointAuthMethod);
 	}
 
 	async $setSessionsForDynamicAuthProvider(authProviderId: string, clientId: string, sessions: (IAuthorizationTokenResponse & { created_at: number })[]): Promise<void> {
 		await this.dynamicAuthProviderStorageService.setSessionsForDynamicAuthProvider(authProviderId, clientId, sessions);
 	}
 
-	async $sendDidChangeDynamicProviderInfo({ providerId, clientId, authorizationServer, label, clientSecret }: Partial<{ providerId: string; clientId: string; authorizationServer: UriComponents; label: string; clientSecret: string }>): Promise<void> {
+	async $sendDidChangeDynamicProviderInfo({ providerId, clientId, authorizationServer, label, clientSecret, tokenEndpointAuthMethod }: Parameters<MainThreadAuthenticationShape['$sendDidChangeDynamicProviderInfo']>[0]): Promise<void> {
 		this.logService.info(`Client ID for authentication provider ${providerId} changed to ${clientId}`);
 		const existing = this.dynamicAuthProviderStorageService.getInteractedProviders().find(p => p.providerId === providerId);
 		if (!existing) {
@@ -379,11 +412,12 @@ export class MainThreadAuthentication extends Disposable implements MainThreadAu
 
 		// Store client credentials together
 		await this.dynamicAuthProviderStorageService.storeClientRegistration(
-			providerId || existing.providerId,
+			providerId,
 			authorizationServer ? URI.revive(authorizationServer).toString(true) : existing.authorizationServer,
 			clientId || existing.clientId,
 			clientSecret,
-			label || existing.label
+			label || existing.label,
+			tokenEndpointAuthMethod,
 		);
 	}
 
@@ -656,7 +690,10 @@ export class MainThreadAuthentication extends Disposable implements MainThreadAu
 	}
 
 	async $promptForClientRegistration(authorizationServerUrl: string): Promise<{ clientId: string; clientSecret?: string } | undefined> {
-		const redirectUrls = 'http://127.0.0.1:33418\nhttps://vscode.dev/redirect';
+		const browserRedirectUri = isSignalCOAuthScheme(this.productService.urlProtocol)
+			? (isNative ? getSignalCOAuthRedirectUri(this.productService) : undefined)
+			: 'https://vscode.dev/redirect';
+		const redirectUrls = [`http://127.0.0.1:${DEFAULT_AUTH_FLOW_PORT}/`, browserRedirectUri].filter(Boolean).join('\n');
 
 		// Show modal dialog first to explain the situation and get user consent
 		const result = await this.dialogService.prompt({
@@ -690,7 +727,7 @@ export class MainThreadAuthentication extends Disposable implements MainThreadAu
 
 		const clientId = await this.quickInputService.input({
 			title: sharedTitle,
-			prompt: nls.localize('clientIdPrompt', "Enter an existing client ID that has been registered with the following redirect URIs: http://127.0.0.1:33418, https://vscode.dev/redirect"),
+			prompt: nls.localize('clientIdPrompt', "Enter the public client ID for your registered OAuth app."),
 			placeHolder: nls.localize('clientIdPlaceholder', "OAuth client ID (azye39d...)"),
 			ignoreFocusLost: true,
 			validateInput: async (value: string) => {

@@ -7,6 +7,7 @@ import assert from 'assert';
 import sinon from 'sinon';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
+import { isCancellationError } from '../../../../../base/common/errors.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { EditorOption } from '../../../../../editor/common/config/editorOptions.js';
@@ -17,7 +18,7 @@ import { createTestCodeEditor } from '../../../../../editor/test/browser/testCod
 import { createTextModel } from '../../../../../editor/test/common/testTextModel.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ChatDictationSurface, ChatSpeechToTextState, IChatDictationTranscript, IChatSpeechToTextService, isDictationActiveOnSurface } from '../../browser/speechToText/chatSpeechToTextService.js';
-import { isDictating, isDictationActiveForEditor, onDidChangeDictationEditor, startDictation, stopDictation, stopDictationForEditor } from '../../browser/speechToText/dictationSession.js';
+import { cancelDictationForEditor, isDictating, isDictationActiveForEditor, onDidChangeDictationEditor, startDictation, stopDictation, stopDictationForEditor } from '../../browser/speechToText/dictationSession.js';
 
 suite('DictationSession', () => {
 
@@ -239,6 +240,40 @@ suite('DictationSession', () => {
 			ownsCompletedDictation: false,
 			value: 'hello world',
 		});
+	});
+
+	test('replacing a host draft keeps its visible text and ignores later speech', async () => {
+		const { service, onDidUpdateTranscript } = createService('final old draft', true);
+		const editor = store.add(createTestCodeEditor(store.add(createTextModel(''))));
+		const otherEditor = store.add(createTestCodeEditor(store.add(createTextModel(''))));
+		await startDictation(service, editor, mainWindow, new NullLogService());
+		cancelDictationForEditor(otherEditor);
+		onDidUpdateTranscript.fire({ text: 'visible old draft', finalizedText: '' });
+		cancelDictationForEditor(editor);
+		const saved = editor.getValue();
+		editor.setValue('new draft');
+		onDidUpdateTranscript.fire({ text: 'late old draft', finalizedText: '' });
+		assert.deepStrictEqual([saved, editor.getValue(), isDictating()], ['visible old draft', 'new draft', false]);
+	});
+
+	test('switching a thread during dictation finalization discards the late text and cancels the old submit', async () => {
+		const { service, onDidUpdateTranscript, blockStop } = createService('final old draft', true);
+		const editor = store.add(createTestCodeEditor(store.add(createTextModel(''))));
+		await startDictation(service, editor, mainWindow, new NullLogService());
+		onDidUpdateTranscript.fire({ text: 'visible old draft', finalizedText: '' });
+		const release = blockStop();
+		const firstSubmit = stopDictationForEditor(editor);
+		const secondSubmit = stopDictationForEditor(editor);
+		cancelDictationForEditor(editor);
+		editor.setValue('another account draft');
+		const focus = sinon.spy(editor, 'focus');
+		try {
+			release();
+			await Promise.all([assert.rejects(firstSubmit, isCancellationError), assert.rejects(secondSubmit, isCancellationError)]);
+			assert.deepStrictEqual([editor.getValue(), isDictationActiveForEditor(editor), focus.called], ['another account draft', false, false]);
+		} finally {
+			focus.restore();
+		}
 	});
 
 	test('renders the whole in-progress transcript as still processing', async () => {

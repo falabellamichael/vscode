@@ -3,6 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+.editor-instance[data-editor-id="gettingStartedPage"] {
+	background-color: var(--vscode-welcomePage-background, var(--vscode-panel-background, var(--vscode-editor-background)));
+	color: var(--vscode-foreground);
+	display: flow-root;
+}
+
 .file-icons-enabled .show-file-icons .vscode_getting_started_page-name-file-icon.file-icon::before {
 	content: ' ';
 	background-color: transparent;
@@ -1025,7 +1031,7 @@
 
 /* The button has the tiles' background, so on a tile surface it takes the page's background instead to stay visible. */
 .monaco-workbench .part.editor > .content .gettingStartedContainer .gettingStartedSlideCategories > .gettingStartedCategoriesContainer.agents-window-graphic-shown:is([data-agents-window-section-style="card"], [data-agents-window-section-style="band"]) > .footer > .agents-banner > .agents-banner-button:not(:hover) {
-	background: var(--vscode-editor-background);
+	background: var(--vscode-welcomePage-background, var(--vscode-panel-background, var(--vscode-editor-background)));
 }
 
 .monaco-workbench .part.editor > .content .gettingStartedContainer .gettingStartedSlideCategories > .gettingStartedCategoriesContainer.agents-window-graphic-shown[data-agents-window-section-style="outline"] > .footer > .agents-banner {
@@ -1325,7 +1331,7 @@
 }
 
 .monaco-workbench .part.editor > .content .gettingStartedContainer {
-	background: var(--vscode-welcomePage-background);
+	background: var(--vscode-welcomePage-background, var(--vscode-panel-background, var(--vscode-editor-background)));
 	color: var(--vscode-foreground);
 }
 

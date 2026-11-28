@@ -100,6 +100,17 @@ export class ChatContextContributions extends Disposable implements IWorkbenchCo
 
 		this._store.add(contextPickService.registerChatContextItem(instantiationService.createInstance(ToolsContextPickerPick)));
 		this._store.add(contextPickService.registerChatContextItem(new AgentContextValuePick()));
+		this._store.add(contextPickService.registerChatContextItem({
+			type: 'valuePick',
+			label: localize('chatContext.outputType', "Output Type..."),
+			icon: Codicon.output,
+			ordinal: 890,
+			isEnabled: widget => widget.inputPart.hasOutputTypePicker,
+			asAttachment: async widget => {
+				widget.inputPart.openOutputTypePicker();
+				return undefined;
+			},
+		}));
 		this._store.add(contextPickService.registerChatContextItem(instantiationService.createInstance(ChatInstructionsPickerPick)));
 		this._store.add(contextPickService.registerChatContextItem(instantiationService.createInstance(OpenEditorContextValuePick)));
 		this._store.add(contextPickService.registerChatContextItem(instantiationService.createInstance(SessionReferenceContextPickerPick)));

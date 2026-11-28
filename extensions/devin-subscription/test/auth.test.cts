@@ -6,7 +6,7 @@
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { createHash }: typeof import('node:crypto') = require('node:crypto');
 const { test }: typeof import('node:test') = require('node:test');
-const { signInToDevin, DEVIN_AUTHORIZE_URL, DEVIN_TOKEN_URL }: typeof import('../src/auth.ts') = require('../out/auth.js');
+const { signInToDevin, DEVIN_AUTHORIZE_URL, DEVIN_TOKEN_URL, DEVIN_CLIENT_ID }: typeof import('../src/auth.ts') = require('../out/auth.js');
 
 function callbackUrl(authorize: URL, changes: Record<string, string | null> = {}) {
 	const redirectUri = authorize.searchParams.get('redirect_uri');
@@ -21,7 +21,7 @@ function callbackUrl(authorize: URL, changes: Record<string, string | null> = {}
 	return url;
 }
 
-test('manual browser code omits the loopback redirect and exchanges only its PKCE-bound code', async () => {
+test('manual browser code omits the loopback redirect and exchanges its PKCE-bound code', async () => {
 	let authorize: URL | undefined;
 	const stages: string[] = [];
 	const token = await signInToDevin({
@@ -39,7 +39,10 @@ test('manual browser code omits the loopback redirect and exchanges only its PKC
 			assert.strictEqual(url, DEVIN_TOKEN_URL);
 			assert.ok(options && typeof options.body === 'string' && authorize);
 			const body = JSON.parse(options.body);
-			assert.deepStrictEqual(Object.keys(body).sort(), ['code', 'code_verifier']);
+			assert.deepStrictEqual(Object.keys(body).sort(), ['cli_pkce_marker', 'client_id', 'code', 'code_verifier', 'grant_type']);
+			assert.strictEqual(body.grant_type, 'authorization_code');
+			assert.strictEqual(body.client_id, DEVIN_CLIENT_ID);
+			assert.strictEqual(body.cli_pkce_marker, '1');
 			assert.strictEqual(body.code, 'manual-test-code');
 			assert.strictEqual(createHash('sha256').update(body.code_verifier).digest('base64url'), authorize.searchParams.get('code_challenge'));
 			return Response.json({ session_token: 'manual-test-token' });
@@ -109,7 +112,11 @@ test('uses the browser PKCE flow and fixed HTTPS token endpoint without starting
 			assert.strictEqual(options.redirect, 'error');
 			const body = JSON.parse(options.body);
 			assert.strictEqual(body.code, 'test-authorization-code');
-			assert.deepStrictEqual(Object.keys(body).sort(), ['code', 'code_verifier']);
+			assert.deepStrictEqual(Object.keys(body).sort(), ['cli_pkce_marker', 'client_id', 'code', 'code_verifier', 'grant_type', 'redirect_uri']);
+			assert.strictEqual(body.grant_type, 'authorization_code');
+			assert.strictEqual(body.client_id, DEVIN_CLIENT_ID);
+			assert.strictEqual(body.cli_pkce_marker, '1');
+			assert.strictEqual(body.redirect_uri, authorize.searchParams.get('redirect_uri'));
 			assert.strictEqual(createHash('sha256').update(body.code_verifier).digest('base64url'), authorize.searchParams.get('code_challenge'));
 			return Response.json({ session_token: 'test-session-token' });
 		},
@@ -118,6 +125,24 @@ test('uses the browser PKCE flow and fixed HTTPS token endpoint without starting
 	assert.deepStrictEqual(stages, ['waitingForBrowser', 'exchangingCode']);
 	assert.ok(redirect);
 	await assert.rejects(fetch(redirect), /fetch failed/);
+});
+
+test('accepts the devin_session_token exchange response field', async () => {
+	const token = await signInToDevin({
+		signal: new AbortController().signal,
+		openExternal: async value => { await fetch(callbackUrl(new URL(value))); return true; },
+		request: async () => Response.json({ devin_session_token: 'test-devin-session-token' }),
+	});
+	assert.strictEqual(token, 'test-devin-session-token');
+});
+
+test('accepts the live exchange response shape of token and webapp_host', async () => {
+	const token = await signInToDevin({
+		signal: new AbortController().signal,
+		openExternal: async value => { await fetch(callbackUrl(new URL(value))); return true; },
+		request: async () => Response.json({ token: 'test-live-session-token', webapp_host: 'https://app.devin.ai' }),
+	});
+	assert.strictEqual(token, 'test-live-session-token');
 });
 
 test('ignores missing or wrong state and unrelated paths until the valid callback arrives', async () => {
@@ -222,7 +247,7 @@ test('provider denial does not expose its description or exchange a code', async
 for (const [name, response, expected] of [
 	['HTTP failure', new Response('private response contents', { status: 401 }), /HTTP 401/],
 	['error response', Response.json({ error: 'private error details' }), /valid sign-in response/],
-	['missing token', Response.json({ nested: { arbitrary_session: 'must-not-be-used' } }), /session token/],
+	['missing token', Response.json({ nested: { arbitrary_session: 'must-not-be-used' } }), /session token \(response keys: nested\)/],
 	['unrelated token field', Response.json({ access_token: 'must-not-be-used' }), /session token/],
 ] as const) {
 	test(`rejects ${name} without treating it as a connected account`, async () => {

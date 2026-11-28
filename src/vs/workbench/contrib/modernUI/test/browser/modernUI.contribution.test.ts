@@ -30,7 +30,7 @@ import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { activeContrastBorder, editorBackground, Extensions as ColorRegistryExtensions, IColorRegistry, listHoverBackground, listHoverForeground, listInactiveSelectionBackground, listInactiveSelectionForeground, oneOf, opaque, transparent } from '../../../../../platform/theme/common/colorRegistry.js';
 import { foreground } from '../../../../../platform/theme/common/colors/baseColors.js';
 import { Extensions as ThemeServiceExtensions, IThemingRegistry } from '../../../../../platform/theme/common/themeService.js';
-import { EDITOR_BORDER, EDITOR_GROUP_HEADER_CONNECTED_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BACKGROUND, MODERN_ACTIVITY_BAR_BACKGROUND, MODERN_ACTIVITY_BAR_BORDER, MODERN_ACTIVITY_BAR_INACTIVE_BACKGROUND, MODERN_ACTIVITY_BAR_ITEM_ACTIVE_BACKGROUND, MODERN_ACTIVITY_BAR_ITEM_ACTIVE_FOREGROUND, MODERN_ACTIVITY_BAR_ITEM_HOVER_BACKGROUND, MODERN_ACTIVITY_BAR_ITEM_HOVER_FOREGROUND, MODERN_EDITOR_TAB_ACTIVE_ACTION_BACKGROUND, MODERN_EDITOR_TAB_ACTIVE_BACKGROUND, MODERN_EDITOR_TAB_ACTIVE_FOREGROUND, MODERN_EDITOR_TAB_ACTIVE_HOVER_ACTION_BACKGROUND, MODERN_EDITOR_TAB_ACTIVE_HOVER_BACKGROUND, MODERN_EDITOR_TAB_HOVER_ACTION_BACKGROUND, MODERN_EDITOR_TAB_HOVER_BACKGROUND, MODERN_EDITOR_TAB_HOVER_FOREGROUND, MODERN_EDITOR_TAB_INACTIVE_BACKGROUND, MODERN_EDITOR_TAB_SELECTED_ACTION_BACKGROUND, MODERN_PANEL_BORDER, MODERN_SASH_GRIP_FOREGROUND, MODERN_TAB_ACTIVE_BACKGROUND, MODERN_TAB_ACTIVE_FOREGROUND, MODERN_TAB_HOVER_BACKGROUND, MODERN_TAB_HOVER_FOREGROUND, MODERN_UI_INACTIVE_SHELL_BACKGROUND, MODERN_UI_SHELL_BACKGROUND, PANEL_SECTION_BORDER, PANEL_SECTION_HEADER_BORDER, SIDE_BAR_SECTION_HEADER_BORDER, SURFACE_BORDER, TAB_ACTIVE_BACKGROUND, TAB_ACTIVE_BORDER, TAB_ACTIVE_BORDER_TOP, TAB_ACTIVE_FOREGROUND, TAB_BORDER, TAB_DIVIDER, TAB_HOVER_BACKGROUND, TAB_HOVER_BORDER, TAB_HOVER_FOREGROUND, TAB_INACTIVE_BACKGROUND, TAB_INACTIVE_FOREGROUND, TAB_LAST_PINNED_BORDER, TAB_SELECTED_BACKGROUND, TAB_UNFOCUSED_ACTIVE_BACKGROUND, TAB_UNFOCUSED_HOVER_BACKGROUND, TAB_UNFOCUSED_INACTIVE_BACKGROUND, TITLE_BAR_ACTIVE_BACKGROUND, TITLE_BAR_INACTIVE_BACKGROUND } from '../../../../common/theme.js';
+import { EDITOR_BORDER, EDITOR_GROUP_HEADER_CONNECTED_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BACKGROUND, MODERN_ACTIVITY_BAR_BACKGROUND, MODERN_ACTIVITY_BAR_BORDER, MODERN_ACTIVITY_BAR_INACTIVE_BACKGROUND, MODERN_ACTIVITY_BAR_ITEM_ACTIVE_BACKGROUND, MODERN_ACTIVITY_BAR_ITEM_ACTIVE_FOREGROUND, MODERN_ACTIVITY_BAR_ITEM_HOVER_BACKGROUND, MODERN_ACTIVITY_BAR_ITEM_HOVER_FOREGROUND, MODERN_EDITOR_TAB_ACTIVE_ACTION_BACKGROUND, MODERN_EDITOR_TAB_ACTIVE_BACKGROUND, MODERN_EDITOR_TAB_ACTIVE_FOREGROUND, MODERN_EDITOR_TAB_ACTIVE_HOVER_ACTION_BACKGROUND, MODERN_EDITOR_TAB_ACTIVE_HOVER_BACKGROUND, MODERN_EDITOR_TAB_HOVER_ACTION_BACKGROUND, MODERN_EDITOR_TAB_HOVER_BACKGROUND, MODERN_EDITOR_TAB_HOVER_FOREGROUND, MODERN_EDITOR_TAB_INACTIVE_BACKGROUND, MODERN_EDITOR_TAB_SELECTED_ACTION_BACKGROUND, MODERN_PANEL_BORDER, MODERN_SASH_GRIP_FOREGROUND, MODERN_TAB_ACTIVE_BACKGROUND, MODERN_TAB_ACTIVE_FOREGROUND, MODERN_TAB_HOVER_BACKGROUND, MODERN_TAB_HOVER_FOREGROUND, MODERN_UI_INACTIVE_SHELL_BACKGROUND, MODERN_UI_SHELL_BACKGROUND, PANEL_BACKGROUND, PANEL_SECTION_BORDER, PANEL_SECTION_HEADER_BORDER, SIDE_BAR_BACKGROUND, SIDE_BAR_SECTION_HEADER_BORDER, SURFACE_BORDER, TAB_ACTIVE_BACKGROUND, TAB_ACTIVE_BORDER, TAB_ACTIVE_BORDER_TOP, TAB_ACTIVE_FOREGROUND, TAB_BORDER, TAB_DIVIDER, TAB_HOVER_BACKGROUND, TAB_HOVER_BORDER, TAB_HOVER_FOREGROUND, TAB_INACTIVE_BACKGROUND, TAB_INACTIVE_FOREGROUND, TAB_LAST_PINNED_BORDER, TAB_SELECTED_BACKGROUND, TAB_UNFOCUSED_ACTIVE_BACKGROUND, TAB_UNFOCUSED_HOVER_BACKGROUND, TAB_UNFOCUSED_INACTIVE_BACKGROUND, TITLE_BAR_ACTIVE_BACKGROUND, TITLE_BAR_INACTIVE_BACKGROUND } from '../../../../common/theme.js';
 import { TestEnvironmentService, TestLayoutService, TestLifecycleService } from '../../../../test/browser/workbenchTestServices.js';
 import { LayoutSettings, ModernUIDensity, ModernUIEditorTabStyle } from '../../../../services/layout/browser/layoutService.js';
 import { PRESERVE_MERGED_WORKSPACE_NAME_CASE_CLASS, PRESERVE_WORKSPACE_NAME_CASE_CLASS, shouldPreserveWorkspaceNameCase } from '../../../files/browser/views/explorerView.js';
@@ -5921,6 +5921,109 @@ suite('ModernUIContribution', () => {
 			globalActionsZIndex: '1',
 			globalActionsFlexShrink: '0',
 			globalActionsBackground: 'rgba(0, 0, 0, 0)',
+		});
+	});
+
+	test('keeps sidebar and panel pane headers readable when sideBarSectionHeader.foreground contrasts with pane surface', () => {
+		const root = document.createElement('div');
+		root.className = 'monaco-workbench modern-ui';
+		root.style.setProperty('--vscode-sideBar-background', 'rgb(255, 255, 255)');
+		root.style.setProperty('--vscode-sideBar-foreground', 'rgb(0, 0, 0)');
+		root.style.setProperty('--vscode-panel-background', 'rgb(242, 238, 227)');
+		root.style.setProperty('--vscode-panel-foreground', 'rgb(23, 19, 15)');
+		root.style.setProperty('--vscode-foreground', 'rgb(0, 0, 0)');
+		document.body.appendChild(root);
+		store.add(toDisposable(() => root.remove()));
+
+		const sideBar = appendElement(root, 'part sidebar');
+		const sideBarPaneHeader = appendElement(appendElement(appendElement(sideBar, 'monaco-pane-view'), 'pane'), 'pane-header');
+		// Simulate inline style applied by PaneView/ViewPane using sideBarSectionHeader colors on White Tuxedo
+		sideBarPaneHeader.style.color = 'rgb(255, 255, 255)';
+		sideBarPaneHeader.style.backgroundColor = 'rgb(0, 0, 0)';
+		const sideBarTwisty = appendElement(sideBarPaneHeader, 'twisty-container');
+		const sideBarCodiconIcon = appendElement(sideBarPaneHeader, 'icon codicon codicon-extensions');
+		sideBarCodiconIcon.style.color = 'rgb(255, 255, 255)';
+		const sideBarMaskIcon = appendElement(sideBarPaneHeader, 'icon view-custom');
+		sideBarMaskIcon.style.backgroundColor = 'rgb(255, 255, 255)';
+		const sideBarTitle = appendElement(sideBarPaneHeader, 'title');
+		sideBarTitle.style.color = 'rgb(255, 255, 255)';
+
+		const panel = appendElement(root, 'part panel');
+		const panelPaneHeader = appendElement(appendElement(appendElement(panel, 'monaco-pane-view'), 'pane'), 'pane-header');
+		panelPaneHeader.style.color = 'rgb(255, 255, 255)';
+		panelPaneHeader.style.backgroundColor = 'rgb(0, 0, 0)';
+		const panelTitle = appendElement(panelPaneHeader, 'title');
+		const panelMaskIcon = appendElement(panelPaneHeader, 'icon view-custom');
+		panelMaskIcon.style.backgroundColor = 'rgb(255, 255, 255)';
+
+		const targetWindow = getWindow(root);
+		assert.deepStrictEqual({
+			sideBarBg: targetWindow.getComputedStyle(sideBarPaneHeader).backgroundColor,
+			sideBarFg: targetWindow.getComputedStyle(sideBarPaneHeader).color,
+			sideBarTwistyFg: targetWindow.getComputedStyle(sideBarTwisty).color,
+			sideBarCodiconFg: targetWindow.getComputedStyle(sideBarCodiconIcon).color,
+			sideBarMaskBg: targetWindow.getComputedStyle(sideBarMaskIcon).backgroundColor,
+			sideBarTitleFg: targetWindow.getComputedStyle(sideBarTitle).color,
+			panelBg: targetWindow.getComputedStyle(panelPaneHeader).backgroundColor,
+			panelFg: targetWindow.getComputedStyle(panelPaneHeader).color,
+			panelTitleFg: targetWindow.getComputedStyle(panelTitle).color,
+			panelMaskBg: targetWindow.getComputedStyle(panelMaskIcon).backgroundColor,
+		}, {
+			sideBarBg: 'rgb(255, 255, 255)',
+			sideBarFg: 'rgb(0, 0, 0)',
+			sideBarTwistyFg: 'rgb(0, 0, 0)',
+			sideBarCodiconFg: 'rgb(0, 0, 0)',
+			sideBarMaskBg: 'rgb(0, 0, 0)',
+			sideBarTitleFg: 'rgb(0, 0, 0)',
+			panelBg: 'rgb(242, 238, 227)',
+			panelFg: 'rgb(23, 19, 15)',
+			panelTitleFg: 'rgb(23, 19, 15)',
+			panelMaskBg: 'rgb(23, 19, 15)',
+		});
+	});
+
+	test('keeps connected pane strips and editor tab action icons readable on mixed-polarity themes', () => {
+		const root = appendElement(document.body, 'monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs vs');
+		store.add(toDisposable(() => root.remove()));
+		const style = document.createElement('style');
+		root.appendChild(style);
+
+		const sideBarStripProbe = appendElement(appendElement(root, 'part sidebar'), 'strip-probe');
+		sideBarStripProbe.style.backgroundColor = 'var(--modern-ui-connected-tab-strip-background)';
+		const auxStripProbe = appendElement(appendElement(root, 'part auxiliarybar'), 'strip-probe');
+		auxStripProbe.style.backgroundColor = 'var(--modern-ui-connected-tab-strip-background)';
+		const panelStripProbe = appendElement(appendElement(root, 'part panel'), 'strip-probe');
+		panelStripProbe.style.backgroundColor = 'var(--modern-ui-connected-tab-strip-background)';
+
+		const editorTitle = appendElement(appendElement(appendElement(appendElement(root, 'part editor'), 'content'), 'editor-group-container'), 'title tabs');
+		const editorActionIcon = appendElement(appendElement(editorTitle, 'editor-actions'), 'action-label codicon');
+
+		const theme = ColorThemeData.createUnloadedTheme('vs', {
+			[editorBackground]: '#000000',
+			[EDITOR_GROUP_HEADER_TABS_BACKGROUND]: '#000000',
+			[EDITOR_GROUP_HEADER_CONNECTED_TABS_BACKGROUND]: '#000000',
+			[SIDE_BAR_BACKGROUND]: '#ffffff',
+			[PANEL_BACKGROUND]: '#f2eee3',
+			'icon.foreground': '#000000',
+			[TAB_INACTIVE_FOREGROUND]: '#ffffff',
+		});
+		style.textContent = generateColorThemeCSS(theme, '.monaco-workbench', themingRegistry.getThemingParticipants(), TestEnvironmentService).code;
+
+		const targetWindow = getWindow(root);
+		const sideBarStripBg = Color.fromHex('#ffffff').darken(0.04);
+		const panelStripBg = Color.fromHex('#f2eee3').darken(0.04);
+		const formatRgb = (color: Color) => `rgb(${color.rgba.r}, ${color.rgba.g}, ${color.rgba.b})`;
+
+		assert.deepStrictEqual({
+			sideBarStrip: targetWindow.getComputedStyle(sideBarStripProbe).backgroundColor,
+			auxStrip: targetWindow.getComputedStyle(auxStripProbe).backgroundColor,
+			panelStrip: targetWindow.getComputedStyle(panelStripProbe).backgroundColor,
+			editorActionColor: targetWindow.getComputedStyle(editorActionIcon).color,
+		}, {
+			sideBarStrip: formatRgb(sideBarStripBg),
+			auxStrip: formatRgb(sideBarStripBg),
+			panelStrip: formatRgb(panelStripBg),
+			editorActionColor: 'rgb(255, 255, 255)',
 		});
 	});
 });

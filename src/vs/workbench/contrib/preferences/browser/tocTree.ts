@@ -18,7 +18,8 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IListService, IWorkbenchObjectTreeOptions, WorkbenchObjectTree } from '../../../../platform/list/browser/listService.js';
 import { getListStyles } from '../../../../platform/theme/browser/defaultStyles.js';
-import { editorBackground, focusBorder } from '../../../../platform/theme/common/colorRegistry.js';
+import { focusBorder } from '../../../../platform/theme/common/colorRegistry.js';
+import { PANEL_BACKGROUND } from '../../../common/theme.js';
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
 import { settingsHeaderForeground, settingsHeaderHoverForeground } from '../common/settingsEditorColorRegistry.js';
 import { SettingsTreeFilter } from './settingsTree.js';
@@ -246,20 +247,20 @@ export class TOCTree extends WorkbenchObjectTree<SettingsTreeGroupElement> {
 		);
 
 		this.style(getListStyles({
-			listBackground: editorBackground,
+			listBackground: PANEL_BACKGROUND,
 			listFocusOutline: focusBorder,
-			listActiveSelectionBackground: editorBackground,
+			listActiveSelectionBackground: PANEL_BACKGROUND,
 			listActiveSelectionForeground: settingsHeaderForeground,
-			listFocusAndSelectionBackground: editorBackground,
+			listFocusAndSelectionBackground: PANEL_BACKGROUND,
 			listFocusAndSelectionForeground: settingsHeaderForeground,
-			listFocusBackground: editorBackground,
+			listFocusBackground: PANEL_BACKGROUND,
 			listFocusForeground: settingsHeaderHoverForeground,
 			listHoverForeground: settingsHeaderHoverForeground,
-			listHoverBackground: editorBackground,
-			listInactiveSelectionBackground: editorBackground,
+			listHoverBackground: PANEL_BACKGROUND,
+			listInactiveSelectionBackground: PANEL_BACKGROUND,
 			listInactiveSelectionForeground: settingsHeaderForeground,
-			listInactiveFocusBackground: editorBackground,
-			listInactiveFocusOutline: editorBackground,
+			listInactiveFocusBackground: PANEL_BACKGROUND,
+			listInactiveFocusOutline: PANEL_BACKGROUND,
 			treeIndentGuidesStroke: undefined,
 			treeInactiveIndentGuidesStroke: undefined
 		}));

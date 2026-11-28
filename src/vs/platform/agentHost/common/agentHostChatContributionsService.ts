@@ -50,6 +50,7 @@ export interface ITurnEnd {
 
 /** A turn about to be sent to an agent, carrying its owning session, target chat, message, and id. */
 export interface IOutgoingTurn {
+	readonly renameChatTool?: boolean;
 	readonly session: ProtocolURI;
 	readonly chat: ProtocolURI;
 	readonly message: Message;

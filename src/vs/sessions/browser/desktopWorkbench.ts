@@ -277,7 +277,9 @@ export class DesktopWorkbench extends Workbench {
 
 	protected override _topRightSectionChildren(sessionsNode: ISerializedNode, editorNode: ISerializedNode, _auxiliaryBarNode: ISerializedNode, customViewGridNode: ISerializedNode): ISerializedNode[] {
 		// The auxiliary bar is inside the editor part and omitted from the grid.
-		return [sessionsNode, editorNode, customViewGridNode];
+		// The custom view grid goes first so a part it does not cover, such as
+		// the side pane, keeps its place beside it.
+		return [customViewGridNode, sessionsNode, editorNode];
 	}
 
 	protected override _layoutSidePane(): void {

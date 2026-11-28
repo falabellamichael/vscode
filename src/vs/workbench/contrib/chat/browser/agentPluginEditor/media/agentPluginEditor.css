@@ -3,6 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+.editor-instance[data-editor-id="workbench.editor.agentPlugin"],
+.editor-instance[data-editor-id="agentPlugin.editor.update"] {
+	background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
+	display: flow-root;
+}
+
 .agent-plugin-editor {
 	& .marketplace-link {
 		color: var(--vscode-textLink-foreground);

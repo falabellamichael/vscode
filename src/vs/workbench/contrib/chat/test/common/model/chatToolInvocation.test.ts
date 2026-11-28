@@ -17,6 +17,12 @@ suite('ChatToolInvocation permission provenance', () => {
 	const tool: IToolData = { id: 'tool', displayName: 'Tool', modelDescription: 'Tool', source: ToolDataSource.Internal };
 	const prepared = { invocationMessage: 'Run tool', confirmationMessages: { title: 'Allow tool?', message: 'Run tool?' } };
 
+	test('replaces a prepared success label with the error when a file creation fails', async () => {
+		const invocation = new ChatToolInvocation({ invocationMessage: 'Creating index.html', pastTenseMessage: 'Created index.html' }, tool, 'create', undefined, {});
+		await invocation.didExecuteTool({ content: [], toolResultError: 'Choose a local workspace folder.' });
+		assert.strictEqual(invocation.toJSON().pastTenseMessage, 'Choose a local workspace folder.');
+	});
+
 	for (const initialState of ['executing', 'streaming', 'confirmation']) {
 		test(`records image generation duration after execution begins and persists it (${initialState})`, async () => {
 			const clock = useFakeTimers({ toFake: ['Date'] });

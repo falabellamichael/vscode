@@ -65,6 +65,7 @@ export interface IMcpStdioServerConfiguration extends ICommonMcpServerConfigurat
 
 export interface IMcpRemoteServerOAuthConfiguration {
 	readonly clientId?: string;
+	readonly useHttpsCallback?: boolean;
 }
 
 export interface IMcpRemoteServerConfiguration extends ICommonMcpServerConfiguration {

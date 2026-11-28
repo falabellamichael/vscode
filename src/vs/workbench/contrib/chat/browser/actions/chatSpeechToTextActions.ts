@@ -11,7 +11,7 @@ import { KeyCode, KeyMod } from '../../../../../base/common/keyCodes.js';
 import { EditorContextKeys } from '../../../../../editor/common/editorContextKeys.js';
 import { localize, localize2 } from '../../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../../platform/actions/common/actions.js';
-import { ContextKeyExpr } from '../../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr, ContextKeyExpression } from '../../../../../platform/contextkey/common/contextkey.js';
 import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { KeybindingWeight } from '../../../../../platform/keybinding/common/keybindingsRegistry.js';
@@ -28,7 +28,7 @@ import { IChatExecuteActionContext } from './chatExecuteActions.js';
 import { IChatWidgetService } from '../chat.js';
 import { ChatSpeechToTextState, DictationSettingId, IChatSpeechToTextService } from '../speechToText/chatSpeechToTextService.js';
 import { buildMicrophoneOptions, IDictationOnboardingService, RESET_DICTATION_ONBOARDING_COMMAND, SHOW_DICTATION_ONBOARDING_COMMAND } from '../speechToText/dictationOnboarding.js';
-import { cancelDictation, isDictating, startDictation, stopDictation } from '../speechToText/dictationSession.js';
+import { activeDictationEditor, cancelDictation, isDictating, startDictation, stopDictation } from '../speechToText/dictationSession.js';
 
 // Gate on `ChatContextKeys.enabled` so the dictation UI and its commands are
 // hidden (not just disabled) when the user has turned AI features off; without
@@ -44,6 +44,15 @@ const ChatSpeechToTextMaiBackend = ContextKeyExpr.has(ChatContextKeys.speechToTe
  * launched when the button is hidden.
  */
 const ChatSpeechToTextButtonShown = ContextKeyExpr.notEquals(`config.${DictationSettingId.ShowButton}`, false);
+
+function dictationMenus(...conditions: ContextKeyExpression[]) {
+	const when = ContextKeyExpr.and(ChatSpeechToTextConfigured, ChatSpeechToTextButtonShown, AGENTS_VOICE_CONNECTED.negate(), ...conditions);
+	// A hosted text composer offers dictation on its own, independently of the regular chat's Voice Mode pill.
+	return [
+		{ id: MenuId.ChatExecute, group: 'navigation', order: -11, when: ContextKeyExpr.and(when, SegmentedVoiceInputModePillInactive) },
+		{ id: MenuId.for('AgentSessionsTextComposerExecute'), group: 'navigation', order: -11, when },
+	];
+}
 
 /** Releases shorter than this are treated as an accidental tap and discarded. */
 const HOLD_TO_TALK_THRESHOLD_MS = 500;
@@ -87,7 +96,9 @@ export async function runDictationShortcut(
 ): Promise<void> {
 	const { speechService, keybindingService, logService } = context;
 
-	switch (getDictationShortcutOperation(isDictating(), speechService.state, speechService.isPreparingModel)) {
+	const owner = activeDictationEditor();
+	if (owner && owner !== editor) { return; }
+	switch (getDictationShortcutOperation(!!owner, speechService.state, speechService.isPreparingModel)) {
 		case 'cancel':
 			cancelDictation();
 			return;
@@ -130,7 +141,7 @@ export async function runDictationShortcut(
 		return;
 	}
 
-	await stopDictation();
+	if (activeDictationEditor() === editor) { await stopDictation(); }
 }
 
 export class ToggleChatSpeechToTextAction extends Action2 {
@@ -149,12 +160,7 @@ export class ToggleChatSpeechToTextAction extends Action2 {
 				icon: Codicon.micFilled,
 				title: localize2('chat.speechToText.stop', "Stop Dictation").value,
 			},
-			menu: [{
-				id: MenuId.ChatExecute,
-				order: -11,
-				when: ContextKeyExpr.and(ChatSpeechToTextConfigured, ChatSpeechToTextButtonShown, ChatSpeechToTextPreparing.negate(), AGENTS_VOICE_CONNECTED.negate(), SegmentedVoiceInputModePillInactive),
-				group: 'navigation',
-			}],
+			menu: dictationMenus(ChatSpeechToTextPreparing.negate()),
 			keybinding: {
 				// Outrank the legacy "Start Voice Chat" action, which binds the
 				// same Cmd+I in the chat input at WorkbenchContrib weight. When
@@ -205,17 +211,12 @@ export class ChatSpeechToTextPreparingAction extends Action2 {
 			f1: false,
 			icon: Codicon.micDownloadCompact,
 			precondition: ChatSpeechToTextPreparing,
-			menu: [{
-				id: MenuId.ChatExecute,
-				order: -11,
-				when: ContextKeyExpr.and(ChatSpeechToTextConfigured, ChatSpeechToTextButtonShown, ChatSpeechToTextPreparing, ChatSpeechToTextMaiBackend.negate(), AGENTS_VOICE_CONNECTED.negate(), SegmentedVoiceInputModePillInactive),
-				group: 'navigation',
-			}],
+			menu: dictationMenus(ChatSpeechToTextPreparing, ChatSpeechToTextMaiBackend.negate()),
 		});
 	}
 
-	async run(): Promise<void> {
-		if (isDictating()) {
+	async run(_accessor: ServicesAccessor, context?: IChatExecuteActionContext): Promise<void> {
+		if (isDictating() && (!context?.widget || activeDictationEditor() === context.widget.inputEditor)) {
 			cancelDictation();
 		}
 	}
@@ -233,17 +234,12 @@ export class ChatSpeechToTextConnectingAction extends Action2 {
 			f1: false,
 			icon: Codicon.loadingCompact,
 			precondition: ChatSpeechToTextPreparing,
-			menu: [{
-				id: MenuId.ChatExecute,
-				order: -11,
-				when: ContextKeyExpr.and(ChatSpeechToTextConfigured, ChatSpeechToTextButtonShown, ChatSpeechToTextPreparing, ChatSpeechToTextMaiBackend, AGENTS_VOICE_CONNECTED.negate(), SegmentedVoiceInputModePillInactive),
-				group: 'navigation',
-			}],
+			menu: dictationMenus(ChatSpeechToTextPreparing, ChatSpeechToTextMaiBackend),
 		});
 	}
 
-	async run(): Promise<void> {
-		if (isDictating()) {
+	async run(_accessor: ServicesAccessor, context?: IChatExecuteActionContext): Promise<void> {
+		if (isDictating() && (!context?.widget || activeDictationEditor() === context.widget.inputEditor)) {
 			cancelDictation();
 		}
 	}

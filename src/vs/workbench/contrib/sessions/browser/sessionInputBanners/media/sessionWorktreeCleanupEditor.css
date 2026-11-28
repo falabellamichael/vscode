@@ -3,6 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+.editor-instance[data-editor-id="sessions.editor.sessionWorktreeCleanup"] {
+	background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
+	display: flow-root;
+}
+
 .session-worktree-cleanup-editor {
 	position: relative;
 	height: 100%;

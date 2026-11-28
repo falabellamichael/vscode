@@ -130,6 +130,14 @@ export interface IComposerSlashCommand {
 	readonly acceptsArguments?: boolean;
 }
 
+export interface IComposerMentionCompletion {
+	/** The mention text without its leading @. */
+	readonly label: string;
+	readonly description?: string;
+	/** Overrides the inserted text. The default is the mention followed by a space. */
+	readonly insertText?: string;
+}
+
 export interface INewChatComposerInputOptions {
 	readonly separateSessionControls?: boolean;
 	readonly selectEnvironment?: (providerId: string) => Promise<void>;
@@ -182,6 +190,8 @@ export interface INewChatComposerInputOptions {
 	readonly hostRequest?: { readonly isRunning: IObservable<boolean>; readonly stop: () => void };
 	/** Commands interpreted by the host's submit handler in its text-only composer. */
 	readonly slashCommands?: readonly IComposerSlashCommand[];
+	/** Host-owned @-mention completions in its text-only composer. The query excludes the leading @. */
+	readonly mentionCompletions?: (query: string) => readonly IComposerMentionCompletion[] | Promise<readonly IComposerMentionCompletion[]>;
 	/** Marks the input box as this onboarding spotlight target. */
 	readonly onboardingTargetId?: string;
 	/**

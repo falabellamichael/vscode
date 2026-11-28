@@ -519,6 +519,8 @@ export interface IMcpServer extends IDisposable {
 	 */
 	start(opts?: IMcpServerStartOpts): Promise<McpConnectionState>;
 	stop(): Promise<void>;
+	/** Stops the server and serializes maintenance with any concurrent attempts to start it. */
+	withServerStopped<T>(task: () => Promise<T>): Promise<T>;
 
 	readonly cacheState: IObservable<McpServerCacheState>;
 	readonly tools: IObservable<readonly IMcpTool[]>;
@@ -678,6 +680,8 @@ export interface IMcpTool {
 	readonly referenceName: string;
 	readonly icons: IMcpIcons;
 	readonly definition: MCP.Tool;
+	/** Tool name as published by the server, before normalization. */
+	readonly wireName?: string;
 	/** Visibility of the tool (Model, App, or both). Defaults to Model | App. */
 	readonly visibility: McpToolVisibility;
 	/** Optional UI resource URI for MCP App rendering */
@@ -730,6 +734,7 @@ export interface McpServerTransportHTTPAuthentication {
 
 export interface McpServerTransportHTTPOAuth {
 	readonly clientId?: string;
+	readonly useHttpsCallback?: boolean;
 	/**
 	 * (Preview) When true, the MCP server uses enterprise-managed authentication via the configured
 	 * SSO issuer (see `mcp.enterpriseManagedAuth.idp`). Tokens are obtained through OAuth Identity

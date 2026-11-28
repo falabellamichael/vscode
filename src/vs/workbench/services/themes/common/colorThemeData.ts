@@ -32,7 +32,7 @@ const colorRegistry = Registry.as<IColorRegistry>(ColorRegistryExtensions.ColorC
 // Theme editors use standard workbench colors. Their user overrides must also win over
 // fixed Agent colors in a fallback theme, while explicit Agent overrides remain first.
 const agentCustomizationFallbacks: ReadonlyMap<string, readonly string[]> = new Map([
-	['agents.background', ['editor.background']],
+	['agents.background', ['sideBar.background', 'editor.background']],
 	['agentsPanel.background', ['panel.background']],
 	['agentsPanel.foreground', ['foreground']],
 	['agentsPanel.border', ['panel.border']],

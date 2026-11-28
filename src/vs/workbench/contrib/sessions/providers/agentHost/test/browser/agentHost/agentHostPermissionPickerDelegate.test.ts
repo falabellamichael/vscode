@@ -690,6 +690,15 @@ suite('AgentHostPermissionPickerDelegate', () => {
 			global: 'on',
 			menuUpdates: 0,
 		});
+
+		const reach = { ...makeActiveSession('reach'), harness: 'reach' };
+		const reachConfig = makeWellKnownConfig('autoApprove', ['default', 'autoApprove']);
+		reachConfig.schema.properties.autoApprove.enumLabels = ['Default Approvals', 'All Access'];
+		provider.sessionConfigs.set(SESSION_ID, reachConfig);
+		const reachPicker = store.add(instantiationService.createInstance(AgentHostPermissionPickerActionItem, action, { compact }, testChatSourceOf(constObservable(reach))));
+		const reachContainer = document.createElement('div');
+		reachPicker.render(reachContainer);
+		assert.strictEqual(reachContainer.querySelector('.chat-input-picker-label')?.textContent, 'All Access');
 	});
 
 	test('returns Default when there is no active session', () => {

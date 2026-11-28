@@ -69,3 +69,21 @@
 	outline: var(--vscode-strokeThickness, 1px) solid var(--vscode-contrastActiveBorder);
 	outline-offset: calc(-1 * var(--vscode-strokeThickness, 1px));
 }
+
+.monaco-workbench .action-item.chat-attach-context-with-output {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+}
+
+.monaco-workbench .action-item.chat-attach-context-with-output > .chat-output-type-indicator {
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .action-item.chat-attach-context-with-output > .chat-output-type-indicator[hidden] {
+	display: none;
+}
+
+.monaco-workbench .action-item.chat-attach-context-with-output > .chat-output-type-indicator:is(:hover, .hovered, :focus-visible) {
+	color: var(--vscode-foreground);
+}

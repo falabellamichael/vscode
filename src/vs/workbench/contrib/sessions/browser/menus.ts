@@ -107,6 +107,13 @@ export const Menus = {
 	 * panel toggle after the terminal leave the title bar while the activity bar shows its layout actions.
 	 */
 	SessionActivityBar: new MenuId('SessionActivityBar'),
+	/**
+	 * The activity bar docked at the right edge of a custom view that asks for one (`ICustomViewDescriptor.activityBar`),
+	 * such as the Assistant view: the same kind of tab entries as the Session Activity Bar.
+	 */
+	AssistantActivityBar: new MenuId('AssistantActivityBar'),
+	/** The Assistant Activity Bar's context menu, shown after the activity bar's own entry actions. */
+	AssistantActivityBarContext: new MenuId('AssistantActivityBarContext'),
 	/** The Session Activity Bar's context menu, shown after the activity bar's own entry actions. */
 	SessionActivityBarContext: new MenuId('SessionActivityBarContext'),
 	/** The sizes of the Session Activity Bar, a submenu of {@link SessionActivityBarContext}. */

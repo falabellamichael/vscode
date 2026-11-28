@@ -4,9 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { canMoveModalEditorToEditorArea, IModalEditorOptions, IModalEditorOptionsProvider, isModalEditorOptionsProvider } from '../../../../../platform/editor/common/editor.js';
+import '../../../../browser/parts/editor/media/modalEditorPart.css';
 
 const MODAL_HEADER_HEIGHT = 33; // matches fallback in modalEditorPart.ts
 
@@ -99,5 +100,97 @@ suite('Modal Editor Compact Header', () => {
 
 		// Compact-header variant measured at 40px → measured value wins
 		assert.strictEqual(resolveHeaderHeight({ offsetHeight: 40 }), 40);
+	});
+
+	test('compact-header uses workbench foreground instead of titleBar foreground for title, icons and separator', () => {
+		const style = document.createElement('style');
+		style.textContent = '.monaco-modal-editor-block { --vscode-titleBar-activeForeground: rgb(255, 255, 255); --vscode-editor-background: rgb(0, 0, 0); --vscode-sideBar-background: rgb(255, 255, 255); --vscode-agentsPanel-foreground: rgb(24, 45, 79); }';
+		document.head.appendChild(style);
+
+		const block = document.createElement('div');
+		block.className = 'monaco-modal-editor-block';
+		const part = block.appendChild(document.createElement('div'));
+		part.className = 'modal-editor-part';
+		const header = part.appendChild(document.createElement('div'));
+		header.className = 'modal-editor-header';
+		const title = header.appendChild(document.createElement('div'));
+		title.className = 'modal-editor-title';
+		const actions = header.appendChild(document.createElement('div'));
+		actions.className = 'modal-editor-action-container';
+		const actionsContainer = actions.appendChild(document.createElement('div'));
+		actionsContainer.className = 'actions-container';
+		const icon = actionsContainer.appendChild(document.createElement('a'));
+		icon.className = 'action-label codicon';
+		const separator = actions.appendChild(document.createElement('div'));
+		separator.className = 'modal-editor-action-separator';
+		document.body.appendChild(block);
+
+		disposables.add(toDisposable(() => {
+			block.remove();
+			style.remove();
+		}));
+
+		assert.strictEqual(getComputedStyle(part).backgroundColor, 'rgb(0, 0, 0)');
+		assert.strictEqual(getComputedStyle(header).color, 'rgb(255, 255, 255)');
+		assert.strictEqual(getComputedStyle(title).color, 'rgb(255, 255, 255)');
+		assert.strictEqual(getComputedStyle(icon).color, 'rgb(255, 255, 255)');
+		assert.strictEqual(getComputedStyle(separator).backgroundColor, 'rgb(255, 255, 255)');
+
+		block.classList.add('compact-header');
+		assert.strictEqual(getComputedStyle(part).backgroundColor, 'rgb(255, 255, 255)');
+		assert.strictEqual(getComputedStyle(header).backgroundColor, 'rgb(255, 255, 255)');
+		assert.strictEqual(getComputedStyle(header).color, 'rgb(24, 45, 79)');
+		assert.strictEqual(getComputedStyle(title).color, 'rgb(24, 45, 79)');
+		assert.strictEqual(getComputedStyle(icon).color, 'rgb(24, 45, 79)');
+		assert.strictEqual(getComputedStyle(separator).backgroundColor, 'rgb(24, 45, 79)');
+	});
+
+	test('ai-customization management sidebar, content and group headers use workbench colors instead of editor background', () => {
+		const style = document.createElement('style');
+		style.textContent = '.ai-customization-management-editor { --vscode-editor-background: rgb(0, 0, 0); --vscode-sideBar-background: rgb(255, 255, 255); --vscode-sideBar-foreground: rgb(0, 0, 0); --vscode-agentsPanel-background: rgb(242, 238, 227); --vscode-agentsPanel-foreground: rgb(23, 19, 15); --vscode-sideBarSectionHeader-foreground: rgb(255, 255, 255); --vscode-foreground: rgb(0, 0, 0); }';
+		document.head.appendChild(style);
+
+		const editor = document.createElement('div');
+		editor.className = 'ai-customization-management-editor';
+		const sidebarContent = editor.appendChild(document.createElement('div'));
+		sidebarContent.className = 'sidebar-content';
+		const managementContent = editor.appendChild(document.createElement('div'));
+		managementContent.className = 'management-content';
+		const groupHeader = managementContent.appendChild(document.createElement('div'));
+		groupHeader.className = 'ai-customization-group-header';
+		const groupLabel = groupHeader.appendChild(document.createElement('span'));
+		groupLabel.className = 'group-label';
+		document.body.appendChild(editor);
+
+		disposables.add(toDisposable(() => {
+			editor.remove();
+			style.remove();
+		}));
+
+		assert.strictEqual(getComputedStyle(sidebarContent).backgroundColor, 'rgb(255, 255, 255)');
+		assert.strictEqual(getComputedStyle(sidebarContent).color, 'rgb(0, 0, 0)');
+		assert.strictEqual(getComputedStyle(managementContent).backgroundColor, 'rgb(242, 238, 227)');
+		assert.strictEqual(getComputedStyle(managementContent).color, 'rgb(23, 19, 15)');
+		assert.strictEqual(getComputedStyle(groupLabel).color, 'rgb(0, 0, 0)');
+	});
+
+	test('non-compact modal editor uses panel background and workbench foreground on mixed-polarity themes', () => {
+		const style = document.createElement('style');
+		style.textContent = '.monaco-modal-editor-block { --vscode-editor-background: rgb(0, 0, 0); --vscode-panel-background: rgb(255, 255, 255); --vscode-foreground: rgb(0, 0, 0); }';
+		document.head.appendChild(style);
+
+		const block = document.createElement('div');
+		block.className = 'monaco-modal-editor-block';
+		const part = block.appendChild(document.createElement('div'));
+		part.className = 'modal-editor-part';
+		document.body.appendChild(block);
+
+		disposables.add(toDisposable(() => {
+			block.remove();
+			style.remove();
+		}));
+
+		assert.strictEqual(getComputedStyle(part).backgroundColor, 'rgb(255, 255, 255)');
+		assert.strictEqual(getComputedStyle(part).color, 'rgb(0, 0, 0)');
 	});
 });

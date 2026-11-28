@@ -66,6 +66,16 @@ function render(appUri: URI, appName = 'Visual Studio Code'): string {
 	return new LoopbackAuthServer(new NullLogger(), appUri, appName).getHtml();
 }
 
+async function requestCallback(server: LoopbackAuthServer, params: URLSearchParams): Promise<{ status: number | undefined; location: string | undefined }> {
+	const { get } = await import('http');
+	return new Promise((resolve, reject) => {
+		get(`${server.redirectUri}?${params}`, response => {
+			response.resume();
+			resolve({ status: response.statusCode, location: response.headers.location });
+		}).on('error', reject);
+	});
+}
+
 /**
  * Builds a callback URI whose path segment carries the given authorization server authority,
  * mirroring how the dynamic auth provider constructs it.
@@ -137,5 +147,49 @@ suite('LoopbackAuthServer - getHtml', () => {
 			},
 			{ hasRawTag: false, hasEscapedTag: true }
 		);
+	});
+});
+
+suite('LoopbackAuthServer - browser callback', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('leaves a pending sign-in usable after callbacks for an earlier sign-in', async () => {
+		const server = new LoopbackAuthServer(new NullLogger(), undefined, 'Signal-C Test');
+		await server.start();
+		try {
+			const result = server.waitForOAuthResponse();
+			void result.catch(() => { });
+			for (const params of [
+				new URLSearchParams({ state: 'earlier-state', code: 'earlier-code' }),
+				new URLSearchParams({ state: 'earlier-state', error: 'access_denied' }),
+				new URLSearchParams({ error: 'access_denied' }),
+				new URLSearchParams([['state', server.state], ['state', 'earlier-state'], ['code', 'ambiguous-code']]),
+			]) {
+				assert.strictEqual((await requestCallback(server, params)).status, 400);
+			}
+			const current = new URLSearchParams({ state: server.state, code: 'current-code' });
+			const response = await requestCallback(server, current);
+			assert.strictEqual(response.status, 302);
+			assert.strictEqual(response.location, '/done');
+			assert.deepStrictEqual(await result, { state: server.state, code: 'current-code' });
+			assert.strictEqual((await requestCallback(server, current)).status, 400);
+		} finally {
+			await server.stop();
+		}
+	});
+
+	test('returns a denial only for the pending sign-in', async () => {
+		const server = new LoopbackAuthServer(new NullLogger(), undefined, 'Signal-C Test');
+		await server.start();
+		try {
+			const result = assert.rejects(server.waitForOAuthResponse(), { message: 'access_denied' });
+			const params = new URLSearchParams({ state: server.state, error: 'access_denied', error_description: 'Access denied & returned' });
+			const response = await requestCallback(server, params);
+			assert.strictEqual(response.status, 302);
+			assert.strictEqual(response.location, '/done?error=Access%20denied%20%26%20returned');
+			await result;
+		} finally {
+			await server.stop();
+		}
 	});
 });

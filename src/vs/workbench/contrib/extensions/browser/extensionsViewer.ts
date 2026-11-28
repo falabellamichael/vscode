@@ -28,6 +28,7 @@ import { IListStyles } from '../../../../base/browser/ui/list/listWidget.js';
 import { HoverPosition } from '../../../../base/browser/ui/hover/hoverWidget.js';
 import { IStyleOverride } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IViewDescriptorService, ViewContainerLocation } from '../../../common/views.js';
+import { PANEL_BACKGROUND } from '../../../common/theme.js';
 import { IWorkbenchLayoutService, Position } from '../../../services/layout/browser/layoutService.js';
 import { areSameExtensions } from '../../../../platform/extensionManagement/common/extensionManagementUtil.js';
 import { ExtensionAction, getContextMenuActions, ManageExtensionAction } from './extensionsActions.js';
@@ -553,11 +554,11 @@ registerThemingParticipant((theme: IColorTheme, collector: ICssStyleCollector) =
 		collector.addRule(`.extensions-grid-view .extension-container:focus { color: ${focusForeground}; }`);
 	}
 	const foregroundColor = theme.getColor(foreground);
-	const editorBackgroundColor = theme.getColor(editorBackground);
-	if (foregroundColor && editorBackgroundColor) {
-		const authorForeground = foregroundColor.transparent(.9).makeOpaque(editorBackgroundColor);
+	const surfaceBackgroundColor = theme.getColor(PANEL_BACKGROUND) ?? theme.getColor(editorBackground);
+	if (foregroundColor && surfaceBackgroundColor) {
+		const authorForeground = foregroundColor.transparent(.9).makeOpaque(surfaceBackgroundColor);
 		collector.addRule(`.extensions-grid-view .extension-container:not(.disabled) .author { color: ${authorForeground}; }`);
-		const disabledExtensionForeground = foregroundColor.transparent(.5).makeOpaque(editorBackgroundColor);
+		const disabledExtensionForeground = foregroundColor.transparent(.5).makeOpaque(surfaceBackgroundColor);
 		collector.addRule(`.extensions-grid-view .extension-container.disabled { color: ${disabledExtensionForeground}; }`);
 	}
 });

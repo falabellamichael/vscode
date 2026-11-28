@@ -12,9 +12,26 @@
 }
 
 .reach-assistant {
+	--assistant-foreground: var(--vscode-assistantView-foreground, var(--vscode-foreground));
+	--assistant-description-foreground: var(--vscode-assistantView-descriptionForeground, var(--vscode-descriptionForeground));
+	--assistant-link-foreground: var(--vscode-assistantView-linkForeground, var(--vscode-textLink-foreground));
 	display: flex;
 	flex-direction: column;
 	container-type: inline-size;
+}
+
+/* These surfaces have their own background, separate from the conversation canvas. */
+.reach-assistant :is(.reach-assistant-task-updates, .reach-assistant-approval, .reach-assistant-composer) {
+	--assistant-foreground: var(--vscode-foreground);
+	--assistant-description-foreground: var(--vscode-descriptionForeground);
+	--assistant-link-foreground: var(--vscode-textLink-foreground);
+}
+
+/* Keep inherited text on light widget cards dark when a split palette is opted in. */
+@container style(--vscode-assistantView-foreground) {
+	.reach-assistant :is(.reach-assistant-task-updates, .reach-assistant-approval) {
+		color: var(--vscode-foreground);
+	}
 }
 
 .reach-assistant [hidden] {
@@ -111,11 +128,12 @@
 }
 
 .reach-assistant-welcome .codicon {
-	color: var(--vscode-foreground);
+	color: var(--assistant-foreground);
 	font-size: 24px;
 }
 
 .reach-assistant-welcome h2 {
+	color: var(--vscode-assistantView-foreground, inherit);
 	margin-block: 12px 0;
 	font-size: 24px;
 	font-weight: 600;
@@ -139,9 +157,19 @@
 }
 
 .reach-assistant-reply {
-	color: var(--vscode-foreground);
+	color: var(--assistant-foreground);
 	overflow-wrap: anywhere;
 	line-height: 1.55;
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+.monaco-workbench :is(.reach-assistant-reply, .reach-assistant-streaming) a {
+	color: var(--assistant-link-foreground);
+}
+
+.monaco-workbench :is(.reach-assistant-reply, .reach-assistant-streaming) a:is(:hover, :active) {
+	color: var(--vscode-assistantView-linkForeground, var(--vscode-textLink-activeForeground));
 }
 
 .reach-assistant-reply pre {
@@ -156,6 +184,7 @@
 }
 
 .reach-assistant-reply-tools .monaco-action-bar .action-label {
+	color: var(--vscode-assistantView-foreground, var(--vscode-icon-foreground));
 	font-size: 14px;
 	padding: 4px;
 }
@@ -225,7 +254,7 @@
 	padding: 4px 6px;
 	border: 0;
 	border-radius: 4px;
-	color: var(--vscode-foreground);
+	color: var(--assistant-foreground);
 	background: transparent;
 	font: inherit;
 	text-align: left;
@@ -250,7 +279,7 @@
 }
 
 .reach-assistant-link {
-	color: var(--vscode-textLink-foreground);
+	color: var(--assistant-link-foreground);
 	width: fit-content;
 	overflow-wrap: anywhere;
 }
@@ -281,7 +310,7 @@
 
 .reach-assistant-muted,
 .reach-assistant-feedback {
-	color: var(--vscode-descriptionForeground);
+	color: var(--assistant-description-foreground);
 }
 
 .reach-assistant-feedback {
@@ -309,7 +338,7 @@
 	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border, transparent));
 	border-radius: 999px;
 	background: transparent;
-	color: var(--vscode-foreground);
+	color: var(--assistant-foreground);
 	font: inherit;
 	font-size: 0.92em;
 	cursor: pointer;
@@ -338,12 +367,12 @@
 }
 
 .reach-assistant-app-count {
-	color: var(--vscode-descriptionForeground);
+	color: var(--assistant-description-foreground);
 	font-size: 0.85em;
 }
 
 .reach-assistant-app-pin {
-	color: var(--vscode-descriptionForeground);
+	color: var(--assistant-description-foreground);
 	font-size: 11px;
 }
 
@@ -352,7 +381,7 @@
 	height: 7px;
 	border-radius: 50%;
 	flex-shrink: 0;
-	background: var(--vscode-descriptionForeground);
+	background: var(--assistant-description-foreground);
 }
 
 .reach-assistant-app-dot.running { background: var(--vscode-charts-green); }
@@ -381,11 +410,11 @@
 
 .reach-assistant-app-add {
 	border-style: dashed;
-	color: var(--vscode-descriptionForeground);
+	color: var(--assistant-description-foreground);
 }
 
 .reach-assistant-app-add:hover {
-	color: var(--vscode-foreground);
+	color: var(--assistant-foreground);
 }
 
 .reach-assistant-suggestions {
@@ -401,7 +430,7 @@
 	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border, transparent));
 	border-radius: 999px;
 	background: transparent;
-	color: var(--vscode-foreground);
+	color: var(--assistant-foreground);
 	font: inherit;
 	cursor: pointer;
 }
@@ -425,7 +454,7 @@
 	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border, transparent));
 	border-radius: 4px;
 	background: var(--vscode-badge-background, transparent);
-	color: var(--vscode-badge-foreground, var(--vscode-foreground));
+	color: var(--vscode-badge-foreground, var(--assistant-foreground));
 	font-size: 11px;
 	max-width: 240px;
 	overflow: hidden;
@@ -435,6 +464,25 @@
 
 .reach-assistant-attachment .codicon {
 	font-size: 12px;
+}
+
+.reach-assistant-images {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 8px 0 2px;
+}
+
+.reach-assistant-image {
+	display: block;
+	width: auto;
+	max-width: min(220px, 100%);
+	height: auto;
+	max-height: 140px;
+	object-fit: cover;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border, transparent));
+	border-radius: 8px;
+	background: var(--vscode-editor-background);
 }
 
 .reach-assistant-followups {
@@ -448,6 +496,7 @@
 }
 
 .reach-assistant-streaming {
+	color: var(--vscode-assistantView-foreground, inherit);
 	margin: 8px 0 0;
 }
 
@@ -474,7 +523,7 @@
 
 .reach-assistant-plan-details > summary {
 	cursor: pointer;
-	color: var(--vscode-descriptionForeground);
+	color: var(--assistant-description-foreground);
 	font-size: 0.92em;
 	user-select: none;
 }
@@ -487,12 +536,12 @@
 	display: flex;
 	align-items: center;
 	gap: 7px;
-	color: var(--vscode-descriptionForeground);
+	color: var(--assistant-description-foreground);
 	font-size: 0.95em;
 }
 
 .reach-assistant-plan-item.inProgress {
-	color: var(--vscode-foreground);
+	color: var(--assistant-foreground);
 }
 
 .reach-assistant-plan-item.inProgress .codicon-sync {
@@ -520,7 +569,7 @@
 	padding: 3px 9px;
 	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border, transparent));
 	border-radius: 999px;
-	color: var(--vscode-descriptionForeground);
+	color: var(--assistant-description-foreground);
 	font-size: 0.92em;
 	max-width: 100%;
 	overflow: hidden;
@@ -535,7 +584,7 @@ button.reach-assistant-activity-chip {
 }
 
 button.reach-assistant-activity-chip:hover {
-	color: var(--vscode-foreground);
+	color: var(--assistant-foreground);
 }
 
 .reach-assistant-activity-duration {
@@ -548,7 +597,7 @@ button.reach-assistant-activity-chip:hover {
 	margin: 4px 0 4px 10px;
 	padding: 6px 10px;
 	border-left: 2px solid var(--vscode-widget-border, var(--vscode-editorWidget-border, transparent));
-	color: var(--vscode-descriptionForeground);
+	color: var(--assistant-description-foreground);
 	font-size: 0.92em;
 	white-space: pre-wrap;
 	word-break: break-word;
@@ -558,7 +607,7 @@ button.reach-assistant-activity-chip:hover {
 .reach-assistant-activity-more[hidden] { display: none; }
 
 .reach-assistant-activity-chip.status-running {
-	color: var(--vscode-foreground);
+	color: var(--assistant-foreground);
 	border-color: var(--vscode-focusBorder);
 }
 
@@ -567,7 +616,7 @@ button.reach-assistant-activity-chip:hover {
 }
 
 .reach-assistant-activity-chip.status-awaitingApproval {
-	color: var(--vscode-foreground);
+	color: var(--assistant-foreground);
 	border-color: var(--vscode-inputOption-activeBorder, var(--vscode-focusBorder));
 }
 
@@ -577,7 +626,7 @@ button.reach-assistant-activity-chip:hover {
 }
 
 .reach-assistant-activity-chip.status-done .codicon:last-child {
-	color: var(--vscode-testing-iconPassed, var(--vscode-foreground));
+	color: var(--vscode-testing-iconPassed, var(--assistant-foreground));
 }
 
 @keyframes reach-assistant-spin {
@@ -591,7 +640,7 @@ button.reach-assistant-activity-chip:hover {
 	gap: 6px;
 	margin: 6px 0 0;
 	font-size: 0.92em;
-	color: var(--vscode-descriptionForeground);
+	color: var(--assistant-description-foreground);
 }
 
 .reach-assistant-editing {
@@ -602,7 +651,7 @@ button.reach-assistant-activity-chip:hover {
 	display: block;
 	margin-top: 4px;
 	font-size: 0.85em;
-	color: var(--vscode-descriptionForeground);
+	color: var(--assistant-description-foreground);
 	text-align: right;
 }
 
@@ -643,12 +692,13 @@ button.reach-assistant-activity-chip:hover {
 
 .reach-assistant-approval-details > summary {
 	cursor: pointer;
-	color: var(--vscode-descriptionForeground);
+	color: var(--assistant-description-foreground);
 	font-size: 0.92em;
 	user-select: none;
 }
 
 .reach-assistant-approval-args {
+	color: var(--vscode-assistantView-foreground, inherit);
 	margin: 0 0 10px;
 	padding: 8px;
 	border-radius: 6px;
@@ -695,11 +745,48 @@ button.reach-assistant-activity-chip:hover {
 	border: 0;
 	border-radius: 4px;
 	background: transparent;
-	color: var(--vscode-descriptionForeground);
+	color: var(--assistant-description-foreground);
 	cursor: pointer;
 }
 
 .reach-assistant-task-action:hover {
 	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--assistant-foreground);
+}
+
+.reach-assistant-document {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: min(100%, 520px);
+	margin: 6px 0;
+	padding: 8px 10px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 6px;
+	background: var(--vscode-editor-background);
 	color: var(--vscode-foreground);
+	text-align: left;
+	cursor: pointer;
+}
+
+.reach-assistant-document:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.reach-assistant-document-text {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.reach-assistant-document-title {
+	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.reach-assistant-document-meta {
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
 }

@@ -135,6 +135,8 @@ import { ChatPetAchievementIds, hasChatPetImageAttachment } from '../chatPetAchi
 import { stopDictationForEditor } from '../speechToText/dictationSession.js';
 import { ChatUserInteraction } from '../chatUserInteractionTelemetry.js';
 import { ChatContentMarkdownRenderer } from './chatContentMarkdownRenderer.js';
+import { getSessionOutputKindFromMetadata, SESSION_OUTPUT_CONTEXT_ID_PREFIX, withSessionOutputTypeMetadata } from '../../common/sessionOutputType.js';
+import { toSessionOutputPromptEntry } from './input/sessionOutputTypePicker.js';
 
 const $ = dom.$;
 
@@ -484,7 +486,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 	private _reportedMigrationOffers: ResourceSet | undefined;
 
 	private recentlyRestoredCheckpoint: boolean = false;
-	private _requestEditSnapshot: { readonly input: string; readonly attachmentIds: ReadonlySet<string> } | undefined;
+	private _requestEditSnapshot: { readonly input: string; readonly attachmentIds: ReadonlySet<string>; readonly sendContextIds: ReadonlySet<string> } | undefined;
 	private _requestEditCancellationPending = false;
 
 	/** Suppresses auto-scroll for the duration of an inline request edit. */
@@ -584,6 +586,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 
 	private readonly viewModelDisposables = this._register(new DisposableStore());
 	private _viewModel: ChatViewModel | undefined;
+	private _committedFrom: URI | undefined;
 	private _requestActiveForStateIndicator = false;
 	private _hasUnvisitedCompletion = false;
 
@@ -593,6 +596,9 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		}
 
 		const previousSessionResource = this._viewModel?.sessionResource;
+		if (!isEqual(previousSessionResource, viewModel?.sessionResource)) {
+			this._committedFrom = this._settingCommittedModel ? previousSessionResource : undefined;
+		}
 		if (!viewModel && this._viewModel?.inputPlaceholder) {
 			this._updateInputPlaceholder(undefined);
 		}
@@ -2756,8 +2762,17 @@ export class ChatWidget extends Disposable implements IChatWidget {
 
 			// set contexts and request to false
 			const currentContext: IChatRequestVariableEntry[] = [];
+			const sendContext: IChatRequestVariableEntry[] = [];
 			const addedContextIds = new Set<string>();
+			const sendContextIds = new Set<string>();
 			const addToContext = (entry: IChatRequestVariableEntry) => {
+				if (entry.id.startsWith(SESSION_OUTPUT_CONTEXT_ID_PREFIX)) {
+					if (!sendContextIds.has(entry.id)) {
+						sendContextIds.add(entry.id);
+						sendContext.push(entry);
+					}
+					return;
+				}
 				const dedupKey = entry.range ? `${entry.id}:${entry.range.start}-${entry.range.endExclusive}` : entry.id;
 				if (addedContextIds.has(dedupKey) || isWorkspaceVariableEntry(entry)) {
 					return;
@@ -2768,14 +2783,24 @@ export class ChatWidget extends Disposable implements IChatWidget {
 				addedContextIds.add(dedupKey);
 				currentContext.push(entry);
 			};
+			let requestMetadata: Record<string, unknown> | undefined;
 			for (let i = requests.length - 1; i >= 0; i -= 1) {
 				const request = requests[i];
 				if (request.id === currentElement.id) {
 					request.setShouldBeBlocked(false); // unblocking just this request.
+					requestMetadata = request.agentHostMetadata;
 					request.attachedContext?.forEach(addToContext);
 				}
 			}
+			requestMetadata ??= this.viewModel?.model.getPendingRequests?.().find(pending => pending.request.id === currentElement.id)?.request.agentHostMetadata;
 			currentElement.variables.forEach(addToContext);
+			if (!sendContextIds.size) {
+				// attachedContext isn't serialized; after a reload the output choice only survives as request metadata.
+				const outputContext = toSessionOutputPromptEntry(getSessionOutputKindFromMetadata(requestMetadata) ?? 'auto');
+				if (outputContext) {
+					sendContext.push(outputContext);
+				}
+			}
 
 			// set states
 			this.viewModel?.setEditing(currentElement);
@@ -2810,6 +2835,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 			this.inputPart.dnd.setDisabledOverlay(!isInput);
 			this.input.renderAttachedContext();
 			this.input.setValue(currentElement.messageText, false);
+			this.input.setSendContext?.(sendContext);
 
 			// restore dynamic variables in the model so decorations and parsing work
 			const dynamicVariableModel = this.getContrib<ChatDynamicVariableModel>(ChatDynamicVariableModel.ID);
@@ -2867,6 +2893,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 			this._requestEditSnapshot = {
 				input: this.getInput(),
 				attachmentIds: this.input.attachmentModel.getAttachmentIDs(),
+				sendContextIds: new Set((this.input.getSendContext?.() ?? []).map(entry => entry.id)),
 			};
 			this._editingAutoScrollHold.value = this.listWidget.acquireAutoScrollHold();
 			this.onDidChangeItems();
@@ -2941,6 +2968,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		const input = this.input;
 		input.attachmentModel.addContext(...state.input?.attachments ?? []);
 		input.setValue(state.text, false);
+		input.setSendContext?.(state.input?.sendContext ?? []);
 		if (state.input?.references) {
 			this.getContrib<ChatDynamicVariableModel>(ChatDynamicVariableModel.ID)?.setInputState({ [ChatDynamicVariableModel.ID]: state.input.references });
 		}
@@ -2948,10 +2976,12 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		this.inputPart.dnd.setDisabledOverlay(true);
 		this._editingAutoScrollHold.value = this.listWidget.acquireAutoScrollHold();
 		store.add(Event.any(input.onDidChangeDraft, input.inputEditor.onDidChangeModelContent, input.attachmentModel.onDidChange)(() => {
+			const sendContext = input.getSendContext?.() ?? state.input?.sendContext ?? [];
 			state.text = input.inputEditor.getValue();
 			state.input = {
 				inputText: state.text,
 				attachments: [...input.attachmentModel.attachments],
+				...(sendContext.length ? { sendContext } : {}),
 				references: getDynamicVariablesForWidget(this),
 			};
 		}));
@@ -3022,9 +3052,12 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		}
 
 		const attachmentIds = this.input.attachmentModel.getAttachmentIDs();
+		const sendContextIds = (this.input.getSendContext?.() ?? []).map(entry => entry.id);
 		return this.getInput() !== snapshot.input
 			|| attachmentIds.size !== snapshot.attachmentIds.size
-			|| [...attachmentIds].some(id => !snapshot.attachmentIds.has(id));
+			|| [...attachmentIds].some(id => !snapshot.attachmentIds.has(id))
+			|| sendContextIds.length !== snapshot.sendContextIds.size
+			|| sendContextIds.some(id => !snapshot.sendContextIds.has(id));
 	}
 
 	finishedEditing(completedEdit?: boolean): void {
@@ -3100,6 +3133,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 			renderStyle: options?.renderStyle === 'minimal' ? 'compact' : options?.renderStyle,
 			renderInputToolbarBelowInput: options?.renderInputToolbarBelowInput ?? false,
 			renderSecondaryToolbar: this.viewOptions.renderSecondaryToolbar ?? true,
+			outputTypePicker: this.viewOptions.outputTypePicker,
 			renderStatusToolbar: this.viewOptions.renderStatusToolbar,
 			menus: {
 				executeToolbar: MenuId.ChatExecute,
@@ -4220,6 +4254,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		}
 
 		let savedBeforeSend = false;
+		const sendContext = options?.preserveInput ? [] : this.input.getSendContext?.() ?? [];
 		// Check if a custom submit handler wants to handle this submission
 		if (this.viewOptions.submitHandler) {
 			if (this._submitHandlerInFlight) {
@@ -4235,7 +4270,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 					return;
 				}
 				savedBeforeSend = true;
-				const attachedContext = this.input.getAttachedContext().asArray();
+				const attachedContext = [...this.input.getAttachedContext().asArray(), ...sendContext];
 				const handled = await this.viewOptions.submitHandler(inputValue, this.input.currentModeKind, attachedContext, options.isVoiceModeInput);
 				if (handled) {
 					return;
@@ -4255,9 +4290,14 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		// below. Capture the source composer's context while it still belongs to
 		// this input, so callbacks that create another session can retain it.
 		const immediateCommandOptions: IChatSendRequestOptions = {
-			attachedContext: options?.preserveInput
-				? []
-				: options?.enableImplicitContext === false ? this.input.getAttachedContext().asArray() : this.input.getAttachedAndImplicitContext().asArray(),
+			attachedContext: [
+				...(options?.preserveInput
+					? []
+					: options?.enableImplicitContext === false ? this.input.getAttachedContext().asArray() : this.input.getAttachedAndImplicitContext().asArray())
+					.filter(entry => !entry.id.startsWith(SESSION_OUTPUT_CONTEXT_ID_PREFIX)),
+				...sendContext,
+			],
+			metadata: withSessionOutputTypeMetadata(undefined, sendContext),
 		};
 		const immediateCommandResult = this.viewModel.model.hasActiveRequest.get()
 			? await this._tryExecuteImmediateSlashCommand(inputValue, isUserQuery ? this.parsedInput : undefined, immediateCommandOptions)
@@ -4316,13 +4356,20 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		}
 		this.listWidget.setScrollLock(this.isLockedToCodingAgent || !!checkModeOption(this.input.currentModeKind, this.viewOptions.autoScroll));
 
+		const requestAttachedContext = options?.preserveInput
+			? new ChatRequestVariableSet()
+			: options?.enableImplicitContext === false ? this.input.getAttachedContext() : this.input.getAttachedAndImplicitContext();
+		for (const entry of requestAttachedContext.asArray()) {
+			if (entry.id.startsWith(SESSION_OUTPUT_CONTEXT_ID_PREFIX)) {
+				requestAttachedContext.remove(entry);
+			}
+		}
+		requestAttachedContext.add(...sendContext);
 		const requestInputs: IChatRequestInputOptions = {
 			input: inputValue,
 			// preserveInput means the input box holds an unrelated draft, so its
 			// attachments belong to that draft and must not be sent with this query.
-			attachedContext: options?.preserveInput
-				? new ChatRequestVariableSet()
-				: options?.enableImplicitContext === false ? this.input.getAttachedContext() : this.input.getAttachedAndImplicitContext(),
+			attachedContext: requestAttachedContext,
 		};
 
 		const attachedContext = this._getAttachedContextForConcurrentSlashCommand(options.preserveInput);
@@ -4491,6 +4538,10 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		const modeKind = resolveEditedRequestSelection(editedModeKind, this.input.currentModeKind);
 		const modeInfo = resolveEditedRequestSelection(editedModeInfo, this.input.currentModeInfo);
 		const selectedModelRequestOptions = resolveEditedRequestSelection(editedModelRequestOptions, this.getSelectedModelRequestOptions());
+		const editedRequestMetadata = isEditing
+			? editingViewModel.model.getRequests().find(request => request.id === isEditing.id)?.agentHostMetadata
+			?? editingViewModel.model.getPendingRequests?.().find(pending => pending.request.id === isEditing.id)?.request.agentHostMetadata
+			: undefined;
 
 		const transcriptContext = this.transcriptContextValue;
 		if (transcriptContext) {
@@ -4510,6 +4561,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 				locationData: this._location.resolveData?.(),
 				parserContext: { selectedAgent: this._lastSelectedAgent, mode: modeKind, attachmentCapabilities: this._lastSelectedAgent?.capabilities ?? this.attachmentCapabilities, references: editedReferences },
 				attachedContext: requestInputs.attachedContext.asArray(),
+				metadata: withSessionOutputTypeMetadata(editedRequestMetadata, sendContext),
 				resolvedVariables: resolvedImageVariables,
 				noCommandDetection: options?.noCommandDetection,
 				isVoiceModeInput: options?.isVoiceModeInput,
@@ -4832,7 +4884,9 @@ export class ChatWidget extends Disposable implements IChatWidget {
 			}
 			const activeSession = widget._viewModelObs.read(reader)?.sessionResource;
 			const currentModeId = widget.input.currentModeObs.read(reader).id;
-			if (isEqual(activeSession, sessionResource) && currentModeId === capturedModeId) {
+			// The first send commits an untitled chat while MCP is still discovering tools.
+			const sameSession = isEqual(activeSession, sessionResource) || (!!sessionResource && !!activeSession && isEqual(widget._committedFrom, sessionResource));
+			if (sameSession && currentModeId === capturedModeId) {
 				const tools = widget._requestToolsSources.get(toolsKey)?.read(reader);
 				if (tools) {
 					lastToolsSnapshot = tools;

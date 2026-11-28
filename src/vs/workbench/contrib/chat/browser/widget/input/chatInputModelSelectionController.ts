@@ -269,6 +269,10 @@ export class ChatInputModelSelectionController extends Disposable {
 
 	selectDefault(sessionType = this._runtime.getCurrentSessionType()): void {
 		if (sessionType && this._runtime.isAwaitingSessionModels?.(sessionType)) {
+			// A send can happen before the destination provider publishes its models.
+			if (this._currentModel.get()?.metadata.targetChatSessionType !== sessionType) {
+				this._currentModel.set(undefined, undefined);
+			}
 			return;
 		}
 		const models = this._pool(sessionType);

@@ -31,9 +31,9 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
-import { editorBackground } from '../../../../platform/theme/common/colorRegistry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { EditorPane } from '../../../browser/parts/editor/editorPane.js';
+import { PANEL_BACKGROUND } from '../../../common/theme.js';
 import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
@@ -450,7 +450,7 @@ export abstract class AbstractRuntimeExtensionsEditor extends EditorPane {
 			setRowLineHeight: false,
 			horizontalScrolling: false,
 			overrideStyles: {
-				listBackground: editorBackground
+				listBackground: PANEL_BACKGROUND
 			},
 			accessibilityProvider: new class implements IListAccessibilityProvider<IRuntimeExtension> {
 				getWidgetAriaLabel(): string {

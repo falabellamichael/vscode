@@ -3,6 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+.agent-sessions-workbench .part.editor:not(.modal-editor-part) {
+	--sessions-empty-state-foreground: var(--vscode-editor-foreground, var(--vscode-foreground));
+	--sessions-empty-state-description-foreground: color-mix(in srgb, var(--vscode-editor-foreground, var(--vscode-foreground)) 72%, transparent);
+}
+
 /* Border for editor part in aux window */
 .agent-sessions-workbench > .part.editor:not(.modal-editor-part) {
 	border-top: 1px solid var(--vscode-agentsPanel-border, var(--vscode-widget-border, transparent));
@@ -142,12 +147,12 @@
 }
 
 .agent-sessions-workbench .part.editor .browser-welcome-title {
-	color: var(--vscode-foreground);
+	color: var(--vscode-editor-foreground, var(--vscode-foreground));
 	font-weight: var(--vscode-fontWeight-semiBold);
 }
 
 .agent-sessions-workbench .part.editor .browser-welcome-subtitle {
-	color: var(--vscode-descriptionForeground);
+	color: color-mix(in srgb, var(--vscode-editor-foreground, var(--vscode-foreground)) 72%, transparent);
 	font-weight: var(--vscode-fontWeight-regular);
 }
 
@@ -214,7 +219,7 @@
 	width: var(--vscode-strokeThickness);
 	height: var(--vscode-spacing-size160);
 	margin: 0 var(--vscode-spacing-size40);
-	background-color: var(--vscode-titleBar-activeForeground);
+	background-color: var(--vscode-tab-inactiveForeground, var(--vscode-editor-foreground, var(--vscode-foreground)));
 	opacity: 0.3;
 }
 
@@ -296,7 +301,7 @@
 	width: 1px;
 	height: 16px;
 	margin: 0 4px;
-	background-color: var(--vscode-titleBar-activeForeground);
+	background-color: var(--vscode-tab-inactiveForeground, var(--vscode-editor-foreground, var(--vscode-foreground)));
 	opacity: 0.3;
 }
 

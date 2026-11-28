@@ -18,14 +18,24 @@ import { activeSessionViewBackground, activeSessionViewForeground, agentsPanelBa
  */
 export function applySessionBarThemeColors(container: HTMLElement, theme: IColorTheme): void {
 	const bg = theme.getColor(agentsPanelBackground);
-	const activeFg = theme.getColor(PANEL_ACTIVE_TITLE_FOREGROUND);
-	const inactiveFg = theme.getColor(PANEL_INACTIVE_TITLE_FOREGROUND);
+	const sessionBg = theme.getColor(activeSessionViewBackground) ?? bg;
+	const sessionFg = theme.getColor(activeSessionViewForeground);
+	const activeFg = ensureSessionBarContrast(theme.getColor(PANEL_ACTIVE_TITLE_FOREGROUND), sessionFg, sessionBg);
+	const inactiveFg = ensureSessionBarContrast(theme.getColor(PANEL_INACTIVE_TITLE_FOREGROUND), sessionFg?.transparent(0.72), sessionBg);
 	const activeBorder = theme.getColor(PANEL_ACTIVE_TITLE_BORDER);
 
 	container.style.setProperty('--chat-bar-background', bg?.toString() ?? '');
 	container.style.setProperty('--chat-tab-active-foreground', activeFg?.toString() ?? '');
 	container.style.setProperty('--chat-tab-inactive-foreground', inactiveFg?.toString() ?? '');
 	container.style.setProperty('--chat-tab-active-border', activeBorder?.toString() ?? '');
+}
+
+function ensureSessionBarContrast(foreground: Color | undefined, fallback: Color | undefined, background: Color | undefined): Color | undefined {
+	if (!foreground || !background || !fallback) {
+		return foreground ?? fallback;
+	}
+	const rendered = foreground.isOpaque() ? foreground : foreground.makeOpaque(background);
+	return background.getContrastRatio(rendered) < 3 ? fallback : foreground;
 }
 
 export function applySessionViewThemeColors(container: HTMLElement, theme: IColorTheme, active: boolean): void {
@@ -41,6 +51,7 @@ export function applySessionViewThemeColors(container: HTMLElement, theme: IColo
 
 	container.style.setProperty('--session-view-background', background?.toString() ?? '');
 	container.style.setProperty('--session-view-foreground', foreground?.toString() ?? '');
+	container.style.setProperty('--session-view-description-foreground', foreground ? foreground.transparent(0.72).toString() : '');
 	container.style.setProperty('--part-background', background?.toString() ?? '');
 	container.style.setProperty('--part-foreground', foreground?.toString() ?? '');
 	container.style.setProperty('--modern-ui-editor-tab-action-active-background', activeTabBackground && background ? activeTabBackground.makeOpaque(background).toString() : '');

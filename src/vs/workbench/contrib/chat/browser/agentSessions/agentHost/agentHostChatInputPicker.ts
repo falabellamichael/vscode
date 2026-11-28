@@ -32,6 +32,7 @@ import { affectsAgentHostProviderPreference, IAgentConnection, IAgentHostService
 import { IAgentHostConnectionsService, IAgentHostSessionResolution } from '../../../../../../platform/agentHost/common/agentHostConnectionsService.js';
 import { AgentHostCustomTerminalToolEnabledSettingId } from '../../../../../../platform/agentHost/common/copilotCliConfig.js';
 import { DevinSubscriptionProviderId } from '../../../../../../platform/agentHost/common/devinAgentConfiguration.js';
+import { REACH_CHAT_PROVIDER_ID } from '../../../../../../platform/native/common/native.js';
 import { SessionConfigKey } from '../../../../../../platform/agentHost/common/sessionConfigKeys.js';
 import { CLOUD_SANDBOX_AGENT_PROVIDER } from '../../../../../../platform/agentHost/common/cloudSandboxAgentHost.js';
 import { filterSessionConfigValues, getAvailableSessionApprovalValues, getEffectiveSessionApprovalValue, getSessionApprovalProperty, isChatConfigProperty, getSessionConfigPresentationKey, getSessionModeProperty, getSessionWorkspaceProperties, isHiddenSessionConfigProperty, isSessionConfigWritable, readSessionApprovalLevel, SessionApprovalLevel, validateChatPickerConfigWrite, writeSessionApprovalLevel } from '../../../../../../platform/agentHost/common/sessionConfigProperties.js';
@@ -881,7 +882,7 @@ export class AgentHostChatInputPicker extends Disposable {
 			return {
 				content: this._getModePickerPermissions()
 					? trigger.ariaLabel ?? ''
-					: current ? current.approvalHover ?? (this._property === SessionConfigKey.AutoApprove && current.provider === DevinSubscriptionProviderId
+					: current ? current.approvalHover ?? (this._property === SessionConfigKey.AutoApprove && (current.provider === DevinSubscriptionProviderId || current.provider === REACH_CHAT_PROVIDER_ID)
 						? getEnumValueDescription(current.schema, current.value) : undefined)
 						?? getConfigPickerTriggerHover(this._generic ? '' : this._property, current.schema, current.value, isReadOnly, this._isSandboxed()) : ''
 			};
@@ -1114,7 +1115,7 @@ export class AgentHostChatInputPicker extends Disposable {
 	private async _getActionItems(property: string, schema: SessionConfigPropertySchema, value: unknown, branchItems?: readonly IConfigPickerItem[]): Promise<IActionListItem<IConfigPickerItem>[]> {
 		let items = branchItems ?? await this._getItems(schema, undefined, property);
 		const context = this._readContext(property);
-		if (property === SessionConfigKey.AutoApprove && context?.provider === DevinSubscriptionProviderId) {
+		if (property === SessionConfigKey.AutoApprove && (context?.provider === DevinSubscriptionProviderId || context?.provider === REACH_CHAT_PROVIDER_ID)) {
 			items = items.map(item => ({ ...item, approvalHover: item.description }));
 		}
 		const policyRestricted = isAutoApprovePolicyRestricted(this._configurationService, context?.configSchema);

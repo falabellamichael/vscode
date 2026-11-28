@@ -19,6 +19,8 @@ import { TestInstantiationService } from '../../../../../../platform/instantiati
 import { ILogService, NullLogService } from '../../../../../../platform/log/common/log.js';
 import { IAgentCustomizationScope } from '../../../browser/agentSessions/agentHost/agentHostActiveClientService.js';
 import { AgentHostMcpGatewayCustomizationScope } from '../../../browser/agentSessions/agentHost/agentHostMcpGatewayCustomizationScope.js';
+import { ISignalCDirectMail, ISignalCDirectMailConnection } from '../../../../mcp/browser/signalCDirectMail.js';
+import { directMailGatewayId } from '../../../../mcp/browser/signalCDirectMailGateway.js';
 import { IMcpGatewayResult, IMcpGatewayResultServer, IWorkbenchMcpGatewayService } from '../../../../mcp/common/mcpGatewayService.js';
 import { IMcpServer, IMcpService, McpCollectionDefinition, McpCollectionProvenance } from '../../../../mcp/common/mcpTypes.js';
 import { IAgentHostFileSystemService, SYNCED_CUSTOMIZATION_SCHEME } from '../../../../../services/agentHost/common/agentHostFileSystemService.js';
@@ -33,7 +35,7 @@ suite('Agent host MCP gateway customization scope', () => {
 		readDefinitions: () => constObservable({ server: undefined, collection: upcastPartial<McpCollectionDefinition>({ provenance: McpCollectionProvenance.UserProfile }) }),
 	});
 
-	function fixture(initialServers: readonly IMcpServer[] = [server('selected')], initialDelay?: Promise<void>) {
+	function fixture(initialServers: readonly IMcpServer[] = [server('selected')], initialDelay?: Promise<void>, initialMail: readonly ISignalCDirectMailConnection[] = []) {
 		const fileService = store.add(new FileService(new NullLogService()));
 		store.add(fileService.registerProvider(SYNCED_CUSTOMIZATION_SCHEME, store.add(new InMemoryFileSystemProvider())));
 		const instantiation = store.add(new TestInstantiationService());
@@ -62,8 +64,9 @@ suite('Agent host MCP gateway customization scope', () => {
 			await delay;
 			return { servers: gatewayServers, onDidChangeServers: changed.event, dispose: () => { gatewayDisposed++; disposed.fire(); } } satisfies IMcpGatewayResult;
 		} });
-		const scope = store.add(new AgentHostMcpGatewayCustomizationScope(base, chat, [root], upcastPartial<IMcpService>({ servers }), service, instantiation));
-		return { scope, fileService, customizations, servers, changed, calls,
+		const mail = observableValue('testMail', initialMail);
+		const scope = store.add(new AgentHostMcpGatewayCustomizationScope(base, chat, [root], upcastPartial<IMcpService>({ servers }), service, instantiation, upcastPartial<ISignalCDirectMail>({ connections: mail })));
+		return { scope, fileService, customizations, servers, mail, changed, calls,
 			whenCalled: async (count: number) => { if (calls.length < count) { await Event.toPromise(Event.filter(called.event, () => calls.length >= count)); } },
 			whenDisposed: async (count: number) => { if (gatewayDisposed < count) { await Event.toPromise(Event.filter(disposed.event, () => gatewayDisposed >= count)); } },
 			get gatewayDisposed() { return gatewayDisposed; }, get baseDisposed() { return baseDisposed; }, set gatewayServers(value: readonly IMcpGatewayResultServer[]) { gatewayServers = value; }, set delay(value: Promise<void>) { delay = value; } };
@@ -83,6 +86,18 @@ suite('Agent host MCP gateway customization scope', () => {
 		assert.strictEqual(client.clientId, 'exact-client');
 		assert.strictEqual(client.customizations?.length, 2);
 		assert.strictEqual(client.customizations?.[1].uri, bundle.uri);
+	});
+
+	test('shares only connected mail identities and revokes the gateway when the grant expires', async () => {
+		const gmail = { id: 'gmail-account', provider: 'gmail', label: 'Gmail', needsSignIn: false } as const;
+		const outlook = { id: 'outlook-account', provider: 'outlook', label: 'Outlook', needsSignIn: true } as const;
+		const f = fixture([], undefined, [gmail, outlook]);
+		await f.scope.whenResolved();
+		assert.deepStrictEqual(f.calls.map(call => call.ids), [[directMailGatewayId(gmail)]]);
+		f.mail.set([{ ...gmail, needsSignIn: true }, outlook], undefined);
+		await f.scope.whenResolved();
+		assert.strictEqual(f.gatewayDisposed, 1);
+		assert.strictEqual(f.scope.customizations.get().length, 1);
 	});
 
 	test('removes the published bundle when the gateway revokes all server routes', async () => {

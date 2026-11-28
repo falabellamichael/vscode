@@ -10,6 +10,7 @@ import { IChatDebugFileLoggerService } from '../../../platform/chat/common/chatD
 import { ISessionTranscriptService } from '../../../platform/chat/common/sessionTranscriptService';
 import { ConfigKey, IConfigurationService } from '../../../platform/configuration/common/configurationService';
 import { ICustomInstructionsService, IInstructionIndexFile } from '../../../platform/customInstructions/common/customInstructionsService';
+import { IEndpointProvider } from '../../../platform/endpoint/common/endpointProvider';
 import { IFileSystemService } from '../../../platform/filesystem/common/fileSystemService';
 import { RelativePattern } from '../../../platform/filesystem/common/fileTypes';
 import { IIgnoreService } from '../../../platform/ignore/common/ignoreService';
@@ -25,9 +26,23 @@ import { extUriBiasedIgnorePathCase, isEqual, normalizePath } from '../../../uti
 import { isString } from '../../../util/vs/base/common/types';
 import { URI } from '../../../util/vs/base/common/uri';
 import { IInstantiationService, ServicesAccessor } from '../../../util/vs/platform/instantiation/common/instantiation';
+import { LanguageModelError } from '../../../vscodeTypes';
 import { isCustomizationsIndex, isPromptFile } from '../../prompt/common/chatVariablesCollection';
 import { IBuildPromptContext } from '../../prompt/common/intents';
 import { IChatDiskSessionResources } from '../../prompts/common/chatDiskSessionResources';
+
+// External agent models may be absent from the extension host registry. Search and read only use this metadata for formatting and telemetry.
+export async function getOptionalToolEndpoint(options: Pick<vscode.LanguageModelToolInvocationOptions<unknown>, 'model'>, provider: IEndpointProvider) {
+	try {
+		const model = options.model;
+		return model ? await provider.getChatEndpoint(model) : undefined;
+	} catch (error) {
+		if (error instanceof LanguageModelError && error.code === LanguageModelError.NotFound.name) {
+			return undefined;
+		}
+		throw error;
+	}
+}
 
 export function checkCancellation(token: CancellationToken): void {
 	if (token.isCancellationRequested) {

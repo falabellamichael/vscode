@@ -5,6 +5,7 @@
 
 import assert from 'assert';
 import { encodeBase64, VSBuffer } from '../../../../../base/common/buffer.js';
+import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Event } from '../../../../../base/common/event.js';
 import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -25,6 +26,8 @@ suite('REACH Subscription Connection', () => {
 		const accessToken = 'mock-reach-subscription-token';
 		let cancel: (() => void) | undefined;
 		const prompts: string[][] = [];
+		const turnIds: (string | undefined)[] = [];
+		const finishes: (string | undefined)[] = [];
 		let started = 0;
 		const service = new ReachSubscriptionConnection(upcastPartial<INativeHostService>({ requestReachAuthentication: async request => {
 			requests.push(request);
@@ -37,10 +40,12 @@ suite('REACH Subscription Connection', () => {
 			if (cancelAtExchange && request.action === 'exchange') { cancel?.(); }
 			return { status: 200, data };
 		}, openExternal: async url => { opened.push(url); return true; },
-		sendReachAssistantPrompt: async (id, token, request) => {
+		sendReachAssistantPrompt: async (id, token, request, _requestId, _conversationId, turnId) => {
 			prompts.push([id, token, request.messages.at(-1)?.content ?? '']);
+			turnIds.push(turnId);
 			return { kind: 'reply', text: 'Hello' };
-		} }), upcastPartial<ISecretStorageService>({
+		},
+		finishReachAssistantTurn: async turnId => { finishes.push(turnId); } }), upcastPartial<ISecretStorageService>({
 			onDidChangeSecret: Event.None,
 			get: async key => secrets.get(key),
 			set: async (key, value) => { secrets.set(key, value); },
@@ -48,7 +53,7 @@ suite('REACH Subscription Connection', () => {
 		}), upcastPartial<IProgressService>({
 			withProgress: async (_options, task, onCancel) => { cancel = onCancel; return task({ report() { } }); },
 		}));
-		return { service, requests, opened, secrets, accessToken, prompts };
+		return { service, requests, opened, secrets, accessToken, prompts, turnIds, finishes };
 	}
 
 	test('uses a browser proof, saves only the authenticated account, and signs out', async () => {
@@ -56,7 +61,7 @@ suite('REACH Subscription Connection', () => {
 		const account = await service.signIn();
 		assert.deepStrictEqual(account, { id: 'reach-account', subscriptionActive: true });
 		assert.deepStrictEqual(await service.getAccount(), account);
-		assert.deepStrictEqual(opened, [`${origin}/wallet/connect#flow=${flowId}`]);
+		assert.deepStrictEqual(opened, [`https://signalreach.ca/login.html#client=studio&flow=${flowId}`]);
 		assert.ok(!opened[0].includes(accessToken));
 		const [start, exchange] = requests;
 		assert.ok(start.action === 'start' && exchange.action === 'exchange');
@@ -101,5 +106,26 @@ suite('REACH Subscription Connection', () => {
 		assert.strictEqual(await service.signIn(), undefined);
 		assert.strictEqual(secrets.size, 0);
 		assert.strictEqual(requests.at(-1)?.action, 'logout');
+	});
+
+	test('scopes native assistant turns to the renderer cancellation token', async () => {
+		const { service, turnIds, finishes } = fixture();
+		await service.signIn();
+		const request = { messages: [{ role: 'user' as const, content: 'Hello' }] };
+		const first = new CancellationTokenSource();
+		await service.sendAssistantPrompt('reach-account', request, undefined, first.token);
+		await service.sendAssistantPrompt('reach-account', request, undefined, first.token);
+		const turnId = turnIds[0];
+		assert.ok(turnId);
+		assert.strictEqual(turnIds[1], turnId);
+		assert.deepStrictEqual(finishes, []);
+		first.dispose(true);
+		assert.deepStrictEqual(finishes, [turnId]);
+		const second = new CancellationTokenSource();
+		await service.sendAssistantPrompt('reach-account', request, undefined, second.token);
+		assert.ok(turnIds[2]);
+		assert.notStrictEqual(turnIds[2], turnId);
+		second.dispose(true);
+		assert.deepStrictEqual(finishes, [turnId, turnIds[2]]);
 	});
 });

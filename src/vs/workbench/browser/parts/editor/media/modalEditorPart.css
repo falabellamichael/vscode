@@ -36,7 +36,8 @@
 	grid-template-columns: 1fr;
 	width: 100%;
 	height: 100%;
-	background-color: var(--vscode-editor-background);
+	background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-contrastBorder));
 	border-radius: 8px;
 	overflow: hidden;
@@ -195,11 +196,24 @@
 }
 
 /** Compact Header: simplified header chrome opted in by individual editors */
+.monaco-modal-editor-block.compact-header .modal-editor-part {
+	background-color: var(--vscode-sideBar-background, var(--vscode-agentsPanel-background, var(--vscode-editor-background)));
+}
+
 .monaco-modal-editor-block.compact-header .modal-editor-header {
-	background-color: var(--vscode-editor-background);
+	color: var(--vscode-agentsPanel-foreground, var(--vscode-foreground));
+	background-color: var(--vscode-sideBar-background, var(--vscode-agentsPanel-background, var(--vscode-editor-background)));
 	border-bottom: none;
 	height: 40px;
 	min-height: 40px;
+}
+
+.monaco-modal-editor-block.compact-header .modal-editor-header .modal-editor-title {
+	color: var(--vscode-agentsPanel-foreground, var(--vscode-foreground));
+}
+
+.monaco-modal-editor-block.compact-header .modal-editor-header .modal-editor-action-container .modal-editor-action-separator {
+	background-color: var(--vscode-agentsPanel-foreground, var(--vscode-foreground));
 }
 
 .monaco-modal-editor-block.compact-header .modal-editor-title .monaco-icon-label::before,

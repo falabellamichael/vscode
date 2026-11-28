@@ -16,6 +16,7 @@ import { isWindows } from '../../../../util/vs/base/common/platform';
 import { URI } from '../../../../util/vs/base/common/uri';
 import { SyncDescriptor } from '../../../../util/vs/platform/instantiation/common/descriptors';
 import { IInstantiationService } from '../../../../util/vs/platform/instantiation/common/instantiation';
+import { LanguageModelError } from '../../../../vscodeTypes';
 import { createExtensionUnitTestingServices } from '../../../test/node/services';
 import { CopilotToolMode } from '../../common/toolsRegistry';
 import { FindFilesTool, IFindFilesToolParams } from '../findFilesTool';
@@ -58,6 +59,16 @@ suite('FindFiles', () => {
 
 		const tool = accessor.get(IInstantiationService).createInstance(FindFilesTool);
 		await tool.invoke({ input: { query: 'test/**/*.ts' }, toolInvocationToken: null!, }, CancellationToken.None);
+	});
+
+	test('searches when the calling agent model is unavailable to the extension host', async () => {
+		setup('test/**/*.ts', false);
+		const tool = accessor.get(IInstantiationService).createInstance(FindFilesTool);
+		await tool.invoke({
+			input: { query: 'test/**/*.ts' },
+			toolInvocationToken: null!,
+			get model(): vscode.LanguageModelChat { throw LanguageModelError.NotFound(); },
+		}, CancellationToken.None);
 	});
 
 	test('handles absolute path with glob', async () => {

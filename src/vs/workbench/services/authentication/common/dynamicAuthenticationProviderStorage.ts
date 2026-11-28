@@ -41,21 +41,22 @@ export interface IDynamicAuthenticationProviderStorageService {
 	readonly onDidChangeTokens: Event<DynamicAuthenticationProviderTokensChangeEvent>;
 
 	/**
-	 * Get the client details (ID and secret) for a dynamic authentication provider.
+	 * Get the client registration for a dynamic authentication provider.
 	 * @param providerId The provider ID or authorization server URL.
 	 * @returns The client details if they exist, undefined otherwise.
 	 */
-	getClientRegistration(providerId: string): Promise<{ clientId?: string; clientSecret?: string } | undefined>;
+	getClientRegistration(providerId: string): Promise<{ clientId?: string; clientSecret?: string; tokenEndpointAuthMethod?: string } | undefined>;
 
 	/**
-	 * Store both client ID and client secret for a dynamic authentication provider.
+	 * Store the client registration for a dynamic authentication provider.
 	 * @param providerId The provider ID or authorization server URL.
 	 * @param authorizationServer The authorization server URL for the provider.
 	 * @param clientId The client ID to store.
 	 * @param clientSecret Optional client secret to store.
 	 * @param label Optional label for the provider.
+	 * @param tokenEndpointAuthMethod Optional method returned by dynamic client registration.
 	 */
-	storeClientRegistration(providerId: string, authorizationServer: string, clientId: string, clientSecret?: string, label?: string): Promise<void>;
+	storeClientRegistration(providerId: string, authorizationServer: string, clientId: string, clientSecret?: string, label?: string, tokenEndpointAuthMethod?: string): Promise<void>;
 
 	/**
 	 * Get all dynamic authentication providers that have been interacted with.
@@ -104,7 +105,7 @@ export async function resolveDynamicAuthenticationProviderId(
 
 const providerOperationsByService = new WeakMap<IAuthenticationService, SequencerByKey<string>>();
 
-/** Serializes registration and credential rotation across MCP hosts in the workbench. */
+/** Serializes registration, credential rotation and rejected session recovery across MCP hosts. */
 export function getMcpAuthenticationOperations(authenticationService: IAuthenticationService): SequencerByKey<string> {
 	let operations = providerOperationsByService.get(authenticationService);
 	if (!operations) {

@@ -31,7 +31,7 @@ import { MCP } from '../../contrib/mcp/common/modelContextProtocol.js';
 import { IAuthenticationMcpAccessService } from '../../services/authentication/browser/authenticationMcpAccessService.js';
 import { IAuthenticationMcpService } from '../../services/authentication/browser/authenticationMcpService.js';
 import { IAuthenticationMcpUsageService } from '../../services/authentication/browser/authenticationMcpUsageService.js';
-import { AuthenticationSession, AuthenticationSessionAccount, getDynamicAuthenticationProviderId, IAuthenticationService, isGoogleWorkspaceOAuth } from '../../services/authentication/common/authentication.js';
+import { AuthenticationSession, AuthenticationSessionAccount, getDynamicAuthenticationProviderId, getOAuthTokenFingerprint, IAuthenticationService, isGoogleWorkspaceOAuth, MCP_ACCEPT_PARTIAL_OAUTH_SCOPES, MCP_REFRESH_REJECTED_OAUTH_TOKEN, MCP_USE_HTTPS_OAUTH_CALLBACK } from '../../services/authentication/common/authentication.js';
 import { getMcpAuthenticationOperations, IDynamicAuthenticationProviderStorageService, resolveDynamicAuthenticationProviderId } from '../../services/authentication/common/dynamicAuthenticationProviderStorage.js';
 import { ExtensionHostKind, extensionHostKindToString } from '../../services/extensions/common/extensionHostKind.js';
 import { IExtensionService } from '../../services/extensions/common/extensions.js';
@@ -291,10 +291,11 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 		if (!server) {
 			return undefined;
 		}
-		return this._getSessionForProvider(id, server, providerId, scopes, { clientId: options.clientId }, options.errorOnUserInteraction);
+		const session = await this._getSessionForProvider(id, server, providerId, scopes, { clientId: options.clientId }, options.errorOnUserInteraction, undefined, options.rejectedTokenFingerprint);
+		return session?.accessToken;
 	}
 
-	async $getTokenFromServerMetadata(id: number, authDetails: IMcpAuthenticationDetails, { errorOnUserInteraction, forceNewRegistration, clientId }: IMcpAuthenticationOptions = {}): Promise<string | undefined> {
+	async $getTokenFromServerMetadata(id: number, authDetails: IMcpAuthenticationDetails, { errorOnUserInteraction, rejectedTokenFingerprint, scopeUpgradeFrom, clientId }: IMcpAuthenticationOptions = {}): ReturnType<MainThreadMcpShape['$getTokenFromServerMetadata']> {
 		const server = this._serverDefinitions.get(id);
 		if (!server) {
 			return undefined;
@@ -302,6 +303,11 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 		const authorizationServer = URI.revive(authDetails.authorizationServer);
 		const resourceServer = authDetails.resourceMetadata?.resource ? URI.parse(authDetails.resourceMetadata.resource) : undefined;
 		const resolvedScopes = authDetails.scopes ?? authDetails.resourceMetadata?.scopes_supported ?? authDetails.authorizationServerMetadata.scopes_supported ?? [];
+		const resolvedClientId = clientId ?? authDetails.clientId;
+		const useHttpsCallback = server.launch.type === McpServerTransportType.HTTP && server.launch.oauth?.useHttpsCallback === true;
+		if (useHttpsCallback && (!resolvedClientId || authDetails.enterpriseManaged)) {
+			throw new Error(nls.localize('mcp.httpsCallbackClientRequired', "The HTTPS OAuth callback requires a registered client ID for this MCP server."));
+		}
 
 		// Enterprise-managed servers route through an XAA / ID-JAG provider keyed by the user-configured
 		// SSO issuer instead of doing a per-server DCR against the resource's authorization server.
@@ -342,12 +348,12 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 					// Best-effort lookup; fall through.
 				}
 			}
-			return this._getSessionForProvider(id, server, xaaProviderId, xaaScopes, {
+			const session = await this._getSessionForProvider(id, server, xaaProviderId, xaaScopes, {
 				authorizationServer: issuer, clientId: resourceClientId, resource, audience, clientSecretStorageKey
-			}, errorOnUserInteraction, resourceClientSecret);
+			}, errorOnUserInteraction, resourceClientSecret, rejectedTokenFingerprint, scopeUpgradeFrom);
+			return session && { accessToken: session.accessToken, scopes: session.scopes };
 		}
 
-		const resolvedClientId = clientId ?? authDetails.clientId;
 		const mcpServerUrl = server.launch.type === McpServerTransportType.HTTP ? server.launch.uri.toString(true) : undefined;
 		let clientSecretStorageKey: string | undefined;
 		let clientSecret: string | undefined;
@@ -362,7 +368,7 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 			}
 		}
 
-		const sharedProviderId = await this._authenticationService.getOrActivateProviderIdForServer(authorizationServer, resourceServer);
+		const sharedProviderId = useHttpsCallback ? undefined : await this._authenticationService.getOrActivateProviderIdForServer(authorizationServer, resourceServer);
 		const resourceMetadata = authDetails.resourceMetadata;
 		const operations = getMcpAuthenticationOperations(this._authenticationService);
 		if (clientSecretStorageKey && !clientSecret
@@ -399,8 +405,8 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 		const providerId = await operations.queue(registrationId, async () => {
 			const dynamic = this._authenticationService.isDynamicAuthenticationProvider(registrationId);
 			const active = dynamic || (!explicitProviderId && this._authenticationService.isAuthenticationProviderRegistered(registrationId));
-			let replace = forceNewRegistration;
-			if (dynamic && explicitProviderId && !replace) {
+			let replace = false;
+			if (dynamic && explicitProviderId) {
 				const registered = await this._dynamicAuthenticationProviderStorageService.getClientRegistration(registrationId);
 				replace = !!registered && (registered.clientId !== resolvedClientId || (didLookupClientSecret && registered.clientSecret !== clientSecret));
 			}
@@ -408,9 +414,6 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 				return registrationId;
 			}
 			if (active) {
-				if (!dynamic) {
-					throw new Error('Cannot force new registration for a non-dynamic authentication provider.');
-				}
 				this._authenticationService.unregisterAuthenticationProvider(registrationId);
 				await this._dynamicAuthenticationProviderStorageService.removeDynamicProvider(registrationId);
 			}
@@ -421,9 +424,11 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 			return undefined;
 		}
 
-		return this._getSessionForProvider(id, server, providerId, resolvedScopes, {
-			authorizationServer, clientId: resolvedClientId, resource: authDetails.resourceMetadata?.resource, clientSecretStorageKey
-		}, errorOnUserInteraction, clientSecret);
+		const session = await this._getSessionForProvider(id, server, providerId, resolvedScopes, {
+			authorizationServer, clientId: resolvedClientId, resource: authDetails.resourceMetadata?.resource, clientSecretStorageKey,
+			acceptPartialScopes: !!authDetails.resourceMetadata?.resource && this._authenticationService.isDynamicAuthenticationProvider(providerId),
+		}, errorOnUserInteraction, clientSecret, rejectedTokenFingerprint, scopeUpgradeFrom);
+		return session && { accessToken: session.accessToken, scopes: session.scopes };
 	}
 
 	private _ensureXaaIssuer(): URI {
@@ -444,25 +449,86 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 		return parsed;
 	}
 
-	private async _getSessionForProvider(
+	private _getSessionForProvider(
 		serverId: number,
 		server: McpServerDefinition,
 		providerId: string,
 		scopes: string[],
 		authContext: IMcpServerAuthContext,
-		errorOnUserInteraction: boolean = false,
+		errorOnUserInteraction = false,
 		clientSecret?: string,
-	): Promise<string | undefined> {
-		const { authorizationServer, clientId, resource, audience } = authContext;
-		const providerOptions = { authorizationServer, clientId, clientSecret, resource, audience };
-		const sessions = await this._authenticationService.getSessions(providerId, scopes, { ...providerOptions, silent: errorOnUserInteraction }, true);
+		rejectedTokenFingerprint?: string,
+		scopeUpgradeFrom?: IMcpAuthenticationOptions['scopeUpgradeFrom'],
+	): Promise<AuthenticationSession | undefined> {
+		const resolve = () => this._resolveSessionForProvider(serverId, server, providerId, scopes, authContext, errorOnUserInteraction, clientSecret, rejectedTokenFingerprint, scopeUpgradeFrom);
+		return rejectedTokenFingerprint || scopeUpgradeFrom ? getMcpAuthenticationOperations(this._authenticationService).queue(providerId, resolve) : resolve();
+	}
+
+	private async _resolveSessionForProvider(
+		serverId: number,
+		server: McpServerDefinition,
+		providerId: string,
+		scopes: string[],
+		authContext: IMcpServerAuthContext,
+		errorOnUserInteraction: boolean,
+		clientSecret: string | undefined,
+		rejectedTokenFingerprint: string | undefined,
+		scopeUpgradeFrom: IMcpAuthenticationOptions['scopeUpgradeFrom'],
+	): Promise<AuthenticationSession | undefined> {
+		const { authorizationServer, clientId, resource, audience, acceptPartialScopes } = authContext;
+		const partialScopeOptions = acceptPartialScopes ? { [MCP_ACCEPT_PARTIAL_OAUTH_SCOPES]: true } : {};
 		// Only HTTP servers authenticate, so the server URL is always known here. A token is only released
 		// to a server whose current URL matches the one the user consented to, so changing the URL while
 		// keeping the same id requires re-consent.
 		if (server.launch.type !== McpServerTransportType.HTTP) {
 			return undefined;
 		}
+		const providerOptions = {
+			authorizationServer, clientId, clientSecret, resource, audience,
+			...(scopeUpgradeFrom ? {} : partialScopeOptions),
+			...(server.launch.oauth?.useHttpsCallback === true ? { [MCP_USE_HTTPS_OAUTH_CALLBACK]: true } : {}),
+		};
 		const mcpServerUrl = server.launch.uri.toString(true);
+		let previousGrant: AuthenticationSession | undefined;
+		if (scopeUpgradeFrom) {
+			const previousSessions = await this._authenticationService.getSessions(providerId, scopeUpgradeFrom.scopes, { ...providerOptions, ...partialScopeOptions, silent: true }, true);
+			for (const previous of previousSessions) {
+				if (previous.account.id !== 'unknown'
+					&& this.authenticationMCPServerAccessService.isAccessAllowedForUrl(providerId, previous.account.label, server.id, mcpServerUrl)
+					&& await getOAuthTokenFingerprint(previous.accessToken) === scopeUpgradeFrom.tokenFingerprint) {
+					previousGrant = previous;
+					break;
+				}
+			}
+			if (!previousGrant) {
+				throw new UserInteractionRequiredError('authentication');
+			}
+		}
+		const upgradeAccount = previousGrant?.account;
+		const savedSessions = await this._authenticationService.getSessions(providerId, scopes, { ...providerOptions, silent: errorOnUserInteraction || !!rejectedTokenFingerprint }, true);
+		const rejectedSessions = rejectedTokenFingerprint ? (await Promise.all(savedSessions.map(async session =>
+			await getOAuthTokenFingerprint(session.accessToken) === rejectedTokenFingerprint ? session : undefined))).filter(session => session !== undefined) : [];
+		const rejected = rejectedSessions.find(session => this.authenticationMCPServerAccessService.isAccessAllowedForUrl(providerId, session.account.label, server.id, mcpServerUrl));
+		// A shared extension provider owns the lifetime of its sessions across resources.
+		const ownsGrant = rejected && authorizationServer && resource && this._authenticationService.isDynamicAuthenticationProvider(providerId)
+			&& (providerId === getDynamicAuthenticationProviderId(authorizationServer, { resource })
+				|| providerId === getDynamicAuthenticationProviderId(authorizationServer, { resource }, clientId));
+		// Recover the existing account. An opaque identity must be selected in the browser again.
+		const sessions = previousGrant ? savedSessions.filter(session => session.account.id === previousGrant.account.id && session.accessToken !== previousGrant.accessToken)
+			: rejectedSessions.length ? savedSessions.filter(session => !rejectedSessions.includes(session)
+			&& (!rejected || (rejected.account.id !== 'unknown' && session.account.id === rejected.account.id))) : savedSessions;
+		const rememberSession = async (session: AuthenticationSession, alreadyReplaced = false) => {
+			this.authenticationMCPServerUsageService.addAccountUsage(providerId, session.account.label, [...session.scopes], server.id, server.label);
+			this._serverAuthTracking.track(providerId, serverId, scopes, authContext);
+			if (rejected && rejected.id !== session.id && ownsGrant && !alreadyReplaced) {
+				try {
+					await this._authenticationService.removeSession(providerId, rejected.id);
+				} catch {
+					this._servers.get(serverId)?.pushLog(LogLevel.Warning, nls.localize('mcpAuthRejectedSessionCleanup', "Could not remove the rejected OAuth session."));
+				}
+			}
+			return session;
+		};
 		const accountNamePreference = this.authenticationMcpServersService.getAccountPreference(server.id, providerId);
 		let matchingAccountPreferenceSession: AuthenticationSession | undefined;
 		if (accountNamePreference) {
@@ -473,15 +539,22 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 		if (sessions.length) {
 			// If we have an existing session preference, use that. If not, we'll return any valid session at the end of this function.
 			if (matchingAccountPreferenceSession && this.authenticationMCPServerAccessService.isAccessAllowedForUrl(providerId, matchingAccountPreferenceSession.account.label, server.id, mcpServerUrl)) {
-				this.authenticationMCPServerUsageService.addAccountUsage(providerId, matchingAccountPreferenceSession.account.label, scopes, server.id, server.label);
-				this._serverAuthTracking.track(providerId, serverId, scopes, authContext);
-				return matchingAccountPreferenceSession.accessToken;
+				return rememberSession(matchingAccountPreferenceSession);
 			}
 			// If we only have one account for a single auth provider, lets just check if it's allowed and return it if it is.
 			if (!provider.supportsMultipleAccounts && this.authenticationMCPServerAccessService.isAccessAllowedForUrl(providerId, sessions[0].account.label, server.id, mcpServerUrl)) {
-				this.authenticationMCPServerUsageService.addAccountUsage(providerId, sessions[0].account.label, scopes, server.id, server.label);
-				this._serverAuthTracking.track(providerId, serverId, scopes, authContext);
-				return sessions[0].accessToken;
+				return rememberSession(sessions[0]);
+			}
+		}
+		if (ownsGrant && rejected && rejectedTokenFingerprint && !scopeUpgradeFrom) {
+			const refreshedSessions = await this._authenticationService.getSessions(providerId, scopes, {
+				...providerOptions, silent: true, [MCP_REFRESH_REJECTED_OAUTH_TOKEN]: rejectedTokenFingerprint,
+			}, true);
+			const replacement = refreshedSessions.find(session => session.accessToken !== rejected.accessToken
+				&& session.account.id === rejected.account.id && session.account.label === rejected.account.label
+				&& this.authenticationMCPServerAccessService.isAccessAllowedForUrl(providerId, session.account.label, server.id, mcpServerUrl));
+			if (replacement) {
+				return rememberSession(replacement, true);
 			}
 		}
 
@@ -489,7 +562,7 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 			throw new UserInteractionRequiredError('authentication');
 		}
 
-		const isAllowed = await this.loginPrompt(server.label, provider.label, false);
+		const isAllowed = await this.loginPrompt(server.label, provider.label, upgradeAccount ? 'additionalScopes' : rejected ? 'recovery' : 'signIn');
 		if (!isAllowed) {
 			throw new CancellationError();
 		}
@@ -506,7 +579,7 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 			if (errorOnUserInteraction) {
 				throw new UserInteractionRequiredError('authentication');
 			}
-			const accountToCreate: AuthenticationSessionAccount | undefined = matchingAccountPreferenceSession?.account;
+			const accountToCreate: AuthenticationSessionAccount | undefined = upgradeAccount ?? rejected?.account ?? matchingAccountPreferenceSession?.account;
 			do {
 				session = await this._authenticationService.createSession(
 					providerId,
@@ -517,17 +590,21 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 						account: accountToCreate
 					});
 			} while (
-				accountToCreate
-				&& accountToCreate.label !== session.account.label
+				!upgradeAccount && accountToCreate
+				&& (accountToCreate.label !== session.account.label || (rejected && accountToCreate.id !== 'unknown' && accountToCreate.id !== session.account.id))
 				&& !await this.continueWithIncorrectAccountPrompt(session.account.label, accountToCreate.label)
 			);
+		}
+		if (upgradeAccount && session.account.id !== upgradeAccount.id) {
+			throw new UserInteractionRequiredError('authentication');
+		}
+		if (rejectedTokenFingerprint && await getOAuthTokenFingerprint(session.accessToken) === rejectedTokenFingerprint) {
+			throw new UserInteractionRequiredError('authentication');
 		}
 
 		this.authenticationMCPServerAccessService.updateAllowedMcpServers(providerId, session.account.label, [{ id: server.id, name: server.label, allowed: true, url: mcpServerUrl }]);
 		this.authenticationMcpServersService.updateAccountPreference(server.id, providerId, session.account);
-		this.authenticationMCPServerUsageService.addAccountUsage(providerId, session.account.label, scopes, server.id, server.label);
-		this._serverAuthTracking.track(providerId, serverId, scopes, authContext);
-		return session.accessToken;
+		return rememberSession(session);
 	}
 
 	private async continueWithIncorrectAccountPrompt(chosenAccountLabel: string, requestedAccountLabel: string): Promise<boolean> {
@@ -635,10 +712,12 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 		this._gateways.deleteAndDispose(gatewayId);
 	}
 
-	private async loginPrompt(mcpLabel: string, providerLabel: string, recreatingSession: boolean): Promise<boolean> {
-		const message = recreatingSession
-			? nls.localize('confirmRelogin', "The MCP Server Definition '{0}' wants you to authenticate to {1}.", mcpLabel, providerLabel)
-			: nls.localize('confirmLogin', "The MCP Server Definition '{0}' wants to authenticate to {1}.", mcpLabel, providerLabel);
+	private async loginPrompt(mcpLabel: string, providerLabel: string, reason: 'signIn' | 'recovery' | 'additionalScopes'): Promise<boolean> {
+		const message = reason === 'additionalScopes'
+			? nls.localize('confirmAdditionalScopes', "The MCP server '{0}' needs additional permissions from {1} for this tool.", mcpLabel, providerLabel)
+			: reason === 'recovery'
+				? nls.localize('confirmRelogin', "The MCP Server Definition '{0}' wants you to authenticate to {1}.", mcpLabel, providerLabel)
+				: nls.localize('confirmLogin', "The MCP Server Definition '{0}' wants to authenticate to {1}.", mcpLabel, providerLabel);
 
 		const buttons: IPromptButton<boolean | undefined>[] = [
 			{
@@ -718,8 +797,8 @@ class ExtHostMcpServerLaunch extends Disposable implements IMcpMessageTransport 
 		return this._proxy.$stopMcp(this._serverId);
 	}
 
-	public send(message: MCP.JSONRPCMessage): Promise<void> {
-		return this._proxy.$sendMessage(this._serverId, JSON.stringify(message));
+	public send(message: MCP.JSONRPCMessage, errorOnUserInteraction?: boolean): Promise<void> {
+		return this._proxy.$sendMessage(this._serverId, JSON.stringify(message), errorOnUserInteraction);
 	}
 
 	public extHostDispose() {
@@ -752,6 +831,7 @@ export interface IMcpServerAuthContext {
 	readonly clientId?: string;
 	readonly resource?: string;
 	readonly audience?: string;
+	readonly acceptPartialScopes?: boolean;
 	/** Secret-storage reference; the secret itself is never retained here. */
 	readonly clientSecretStorageKey?: string;
 }

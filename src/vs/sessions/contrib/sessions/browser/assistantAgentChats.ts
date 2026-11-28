@@ -82,6 +82,7 @@ export interface IAssistantAgentChats {
 		readonly navigationVersion: number;
 	};
 	getWorktreeStatus(worktree: IAssistantWorktree): Promise<AssistantWorktreeStatus>;
+	isResourceTrusted(uri: URI): Promise<boolean>;
 	getChats(accountId: string): IAssistantDelegatedChat[];
 	open(accountId: string, id: string): Promise<boolean>;
 	list(accountId: string, target: IAssistantAgentTarget | undefined): string;
@@ -139,15 +140,19 @@ export class AssistantAgentChats implements IAssistantAgentChats {
 		this.conversations = new AssistantConversationStore(storage);
 	}
 
+	async isResourceTrusted(uri: URI): Promise<boolean> {
+		try {
+			return (await this.workspaceTrust.getUriTrustInfo(uri)).trusted;
+		} catch {
+			return false;
+		}
+	}
+
 	async getWorktreeStatus({ uri, identity }: IAssistantWorktree): Promise<AssistantWorktreeStatus> {
 		if (!await this.fileService.exists(URI.joinPath(uri, '.git'))) {
 			return 'missing';
 		}
-		try {
-			if (!(await this.workspaceTrust.getUriTrustInfo(uri)).trusted) { return 'untrusted'; }
-		} catch {
-			return 'untrusted';
-		}
+		if (!await this.isResourceTrusted(uri)) { return 'untrusted'; }
 		const current = await readAssistantWorktreeIdentity(this.fileService, uri);
 		if (!current) { return 'missing'; }
 		if (!identity) { return 'unverified'; }

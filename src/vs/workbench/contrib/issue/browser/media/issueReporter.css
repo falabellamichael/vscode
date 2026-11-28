@@ -3,6 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+.editor-instance[data-editor-id="workbench.editor.issueReporter"] {
+	background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
+	display: flow-root;
+}
+
 .web.issue-reporter-body {
 	position: absolute;
 	overflow-y: scroll;
@@ -189,7 +195,8 @@ body.issue-reporter-body  {
 	margin: 0;
 	overflow-y: auto;
 	height: 100%;
-	background-color: var(--vscode-editor-background)
+	background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
 }
 
 .issue-reporter-body .monaco-workbench {
@@ -490,7 +497,7 @@ body.issue-reporter-body  {
 
 .issue-reporter-body .monaco-workbench,
 .issue-reporter-body::-webkit-scrollbar-track {
-	background-color: var(--vscode-editor-background) !important;
+	background-color: var(--vscode-panel-background, var(--vscode-editor-background)) !important;
 }
 
 .issue-reporter-body .issue-reporter input[type="text"],

@@ -3,6 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+.editor-instance[data-editor-id="workbench.editor.chatDebug"] {
+	background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
+	display: flow-root;
+}
+
 .chat-debug-editor {
 	display: flex;
 	flex-direction: column;
@@ -767,7 +773,7 @@
 	overflow: hidden;
 	position: relative;
 	cursor: grab;
-	background: var(--vscode-editor-background);
+	background: var(--vscode-panel-background, var(--vscode-editor-background));
 }
 .chat-debug-flowchart-content:active {
 	cursor: grabbing;

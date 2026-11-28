@@ -8,22 +8,31 @@ import { renderMarkdown } from '../../../../base/browser/markdownRenderer.js';
 import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { Action, Separator } from '../../../../base/common/actions.js';
 import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
+import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
+import { cancelOnDispose, CancellationToken } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { hash } from '../../../../base/common/hash.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { escapeIcons } from '../../../../base/common/iconLabels.js';
+import { detectImageMimeType } from '../../../../base/common/image.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { equals } from '../../../../base/common/objects.js';
 import { autorun, constObservable, ISettableObservable, observableValue } from '../../../../base/common/observable.js';
-import { basename, extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
+import { basename, extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
+import { escapeRegExpCharacters } from '../../../../base/common/strings.js';
 import { matchesSomeScheme, Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
+import { isCodeEditor } from '../../../../editor/browser/editorBrowser.js';
+import { TextLength } from '../../../../editor/common/core/text/textLength.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { REACH_ASSISTANT_PROMPT_LIMIT, ReachAssistantModel } from '../../../../platform/native/common/native.js';
@@ -34,40 +43,211 @@ import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickin
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IRequestService } from '../../../../platform/request/common/request.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { AccessibilitySignal, IAccessibilitySignalService } from '../../../../platform/accessibilitySignal/browser/accessibilitySignalService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustRequestService } from '../../../../platform/workspace/common/workspaceTrust.js';
-import { IsSessionsWindowContext } from '../../../../workbench/common/contextkeys.js';
+import { ActiveEditorContext, ActivePanelContext, IsAuxiliaryWindowContext, IsSessionsWindowContext, MainEditorAreaVisibleContext, PanelVisibleContext } from '../../../../workbench/common/contextkeys.js';
+import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
+import { Menus } from '../../../../workbench/contrib/sessions/browser/menus.js';
+import { DesktopLayoutContext } from '../../../../workbench/contrib/sessions/common/contextkeys.js';
+import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { TERMINAL_VIEW_ID } from '../../../../workbench/contrib/terminal/common/terminal.js';
+import { TerminalContextKeys } from '../../../../workbench/contrib/terminal/common/terminalContextKey.js';
+import { OPEN_BROWSER_COMMAND_ID } from '../../editor/browser/addTabActions.js';
 import { IChatDraft } from '../../../../workbench/contrib/chat/common/attachments/chatDraft.js';
+import { toRelativeRange } from '../../../../workbench/contrib/chat/common/attachments/chatInlineAttachments.js';
+import { IChatRequestVariableEntry, isImageVariableEntry } from '../../../../workbench/contrib/chat/common/attachments/chatVariableEntries.js';
+import { coerceImageBuffer } from '../../../../workbench/contrib/chat/common/chatImageExtraction.js';
+import { PromptsConfig } from '../../../../workbench/contrib/chat/common/promptSyntax/config/config.js';
+import { PromptsType } from '../../../../workbench/contrib/chat/common/promptSyntax/promptTypes.js';
+import { IPromptsService, PromptsStorage } from '../../../../workbench/contrib/chat/common/promptSyntax/service/promptsService.js';
 import { ISearchService, QueryType } from '../../../../workbench/services/search/common/search.js';
-import { isContributionEnabled } from '../../../../workbench/contrib/chat/common/enablement.js';
+import { ContributionEnablementState, isContributionEnabled } from '../../../../workbench/contrib/chat/common/enablement.js';
 import { IGitService } from '../../../../workbench/contrib/git/common/gitService.js';
 import { McpCommandIds } from '../../../../workbench/contrib/mcp/common/mcpCommandIds.js';
 import { IMcpServer, IMcpService, McpConnectionState, McpToolVisibility } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { signalCDirectMailConnections } from '../../../../workbench/contrib/mcp/common/signalCAppConnections.js';
-import { ISignalCDirectMail } from '../../../../workbench/contrib/mcp/browser/signalCDirectMail.js';
+import { isSignalCMailAddress, ISignalCDirectMail } from '../../../../workbench/contrib/mcp/browser/signalCDirectMail.js';
 import type { IComposerSlashCommand } from '../../../../workbench/contrib/sessions/browser/chat/newChatComposerInput.js';
 import { SharedChatInputComposer } from '../../../../workbench/contrib/sessions/browser/chat/sharedChatInputComposer.js';
 import { AbstractCustomView, ICustomViewService } from '../../../../workbench/contrib/sessions/browser/customView.js';
 import { INewSessionComposerService } from '../../../../workbench/contrib/sessions/browser/newSessionComposerService.js';
 import { ASSISTANT_CUSTOM_VIEW_ID, OPEN_ASSISTANT_ACTION_ID } from '../../../../workbench/contrib/sessions/common/chatConstants.js';
 import { SESSION_WORKTREE_ICON } from '../../../../workbench/contrib/sessions/common/sessionWorktreeIcon.js';
+import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IFocusedSessionHostService } from '../../../../workbench/services/sessions/browser/sessionHost.js';
+import { IUntitledTextEditorService } from '../../../../workbench/services/untitled/common/untitledTextEditorService.js';
+import { UntitledTextEditorInput } from '../../../../workbench/services/untitled/common/untitledTextEditorInput.js';
 import { isSessionCreated, SessionStatus } from '../../../../workbench/services/sessions/common/session.js';
 import { WorkspaceSelectionOrigin } from '../../../../workbench/services/sessions/common/workspaceSelection.js';
+import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { AgentsWindowMenus } from '../../../browser/agentsWindowMenus.js';
 import { IReachSubscriptionConnection } from '../../accountMenu/browser/reachSubscriptionConnection.js';
 import { AgentSubscriptionsAction } from '../../accountMenu/browser/subscriptionActions.js';
 import { assistantWorktreeError, describeAssistantAgentStatus, IAssistantAgentChats, IAssistantAgentTarget } from './assistantAgentChats.js';
 import { ASSISTANT_BRIEFINGS, AssistantBriefingPeriod } from './assistantBriefings.js';
 import { IAssistantBriefingScheduler, IAssistantBriefingTime, IAssistantRoutine, IAssistantRoutineSettings, parseAssistantBriefingTime } from './assistantBriefingScheduler.js';
-import { AssistantConversationStore, AssistantPermissionMode, IAssistantActivity, IAssistantTask, readAssistantTaskTarget, storeAssistantTaskTarget } from './assistantConversation.js';
+import { ASSISTANT_SAVED_IDEA_TEXT_LIMIT, ASSISTANT_SAVED_IDEAS_LIMIT, AssistantConversationStore, AssistantPermissionMode, assistantSummaryIndex, assistantTextAttachment, IAssistantActivity, IAssistantSavedIdea, IAssistantTask, IAssistantTurn, readAssistantTaskTarget, searchAssistantSavedIdeas, storeAssistantTaskTarget } from './assistantConversation.js';
+import { IAssistantMailWatcher } from './assistantMailWatcher.js';
+import { memoryEntries, memoryUsage } from './assistantMemory.js';
 import { IAssistantApprovalRequest, IAssistantRuns } from './assistantRuns.js';
-import { assistantConnectionKey, captureAssistantTaskTarget, collectAssistantTools, findAssistantAppConnection, formatAssistantWorkspacePath, getAssistantWorkspaceFolders, IAssistantWorkspaceFolder, isWorkIqMcpServer, resolveAssistantWorkspacePath, safeMcpTool } from './assistantTools.js';
+import { listAssistantSkills } from './assistantSkills.js';
+import { assistantConnectionKey, assistantToolApprovalKey, captureAssistantTaskTarget, collectAssistantTools, findAssistantAppConnection, formatAssistantWorkspacePath, getAssistantSkillScope, getAssistantWorkspaceFolders, IAssistantWorkspaceFolder, isWorkIqMcpServer, resolveAssistantWorkspacePath, safeMcpTool } from './assistantTools.js';
 import { readAssistantCommonGitDirectory, readAssistantWorktreeIdentity } from './assistantWorktree.js';
 import './media/assistantSession.css';
 
 export const MANAGE_ASSISTANT_ROUTINES_ACTION_ID = 'sessionsView.manageAssistantRoutines';
+export const CLEAR_ASSISTANT_CHAT_ACTION_ID = 'sessionsView.clearAssistantChat';
+
+const ASSISTANT_IMAGE_ATTACHMENT_LIMIT = 4;
+const ASSISTANT_IMAGE_ATTACHMENT_BYTES_LIMIT = 12 * 1024 * 1024;
+
+/** Converts a composer image attachment into the vision input format used by the REACH transport. */
+export function assistantImageAttachmentDataUrl(attachment: IChatRequestVariableEntry): { readonly url: string; readonly bytes: number } | undefined {
+	if (!isImageVariableEntry(attachment)) { return undefined; }
+	const bytes = coerceImageBuffer(attachment.value);
+	if (!bytes?.byteLength) { return undefined; }
+	// The bytes are authoritative: image entries often omit mimeType, and resizing may re-encode them.
+	const mimeType = detectImageMimeType(bytes) ?? attachment.mimeType;
+	if (!mimeType?.startsWith('image/')) { return undefined; }
+	return { url: `data:${mimeType};base64,${encodeBase64(VSBuffer.wrap(bytes))}`, bytes: bytes.byteLength };
+}
+
+/** Document-like reply metadata used for the transcript's document card. */
+export function assistantReplyDocument(reply: string): { readonly title?: string; readonly words: number } | undefined {
+	const headings = [...reply.matchAll(/^#{1,3}\s+(.+?)\s*$/gm)].map(match => match[1].replace(/[#*_`\[\]]/g, '').trim()).filter(Boolean);
+	const words = (reply.match(/\S+/g) ?? []).length;
+	if (reply.length < 1200 && headings.length < 2 && words < 180) { return undefined; }
+	return { title: headings[0], words };
+}
+
+function assistantPromptWithAttachmentContext(input: string, label: string, content: string, truncation: string): string {
+	if (!content.trim()) { return input; }
+	const emptyAttachmentLength = assistantTextAttachment(label, '').length;
+	const available = REACH_ASSISTANT_PROMPT_LIMIT - input.length - emptyAttachmentLength;
+	if (available < 240) { return input; }
+	let excerpt = content;
+	if (excerpt.length > available) {
+		if (available < truncation.length + 80) { return input; }
+		excerpt = `${content.slice(0, available - truncation.length - 1)}\n${truncation}`;
+	}
+	return assistantTextAttachment(label, excerpt) + input;
+}
+
+/** Adds as much open-document context as fits in the fixed-size prompt without pushing the user's typed request over the limit. */
+export function assistantPromptWithDocumentContext(input: string, title: string, content: string): string {
+	return assistantPromptWithAttachmentContext(input, localize('assistantView.documentContextAttachment', "Document · {0}", title), content, '…(document truncated; use document tools for the rest)');
+}
+
+/** Adds the visible document selection as the most specific editing target, bounded by the fixed-size prompt. */
+export function assistantPromptWithSelectionContext(input: string, title: string, selection: { readonly text: string; readonly startLine: number; readonly endLine: number }): string {
+	const label = selection.startLine === selection.endLine
+		? localize('assistantView.selectionContextAttachment', "Selected text · {0} · line {1}", title, selection.startLine)
+		: localize('assistantView.selectionContextAttachmentRange', "Selected text · {0} · lines {1}-{2}", title, selection.startLine, selection.endLine);
+	return assistantPromptWithAttachmentContext(input, label, selection.text, '…(selection truncated)');
+}
+
+/** Finds the current selection in a visible editor for an open Assistant document. */
+export function assistantVisibleDocumentSelection(controls: readonly unknown[], resource: string): { readonly text: string; readonly startLine: number; readonly endLine: number } | undefined {
+	for (const control of controls) {
+		if (!isCodeEditor(control)) { continue; }
+		const model = control.getModel();
+		if (model?.uri.toString() !== resource) { continue; }
+		const selection = control.getSelection();
+		if (!selection || selection.isEmpty()) { return undefined; }
+		const text = model.getValueInRange(selection);
+		return text.trim() ? { text, startLine: selection.startLineNumber, endLine: selection.endLineNumber } : undefined;
+	}
+	return undefined;
+}
+
+/** Reads only explicit self-naming preferences from the user profile; descriptive profile lines are not guessed as names. */
+export function assistantGreetingName(userProfile: string): string | undefined {
+	for (const line of memoryEntries(userProfile)) {
+		const match = /^(?:my name is|name:|call me)\s+([^.,;\n]{2,40})/i.exec(line);
+		const name = match?.[1].trim().replace(/["'`]+/g, '');
+		if (name && /^[\p{L}\p{M}'’._-]+(?: [\p{L}\p{M}'’._-]+){0,2}$/u.test(name)) { return name; }
+	}
+	return undefined;
+}
+
+/** Finds an exact @routine mention. The longest names win so overlapping routine names remain unambiguous. */
+export function assistantRoutineMention(text: string, routines: readonly IAssistantRoutine[]): { readonly routine: IAssistantRoutine; readonly start: number; readonly end: number } | undefined {
+	const candidates = [...routines]
+		.filter(routine => routine.name.trim().length > 0)
+		.sort((a, b) => b.name.length - a.name.length);
+	for (let at = text.indexOf('@'); at >= 0; at = text.indexOf('@', at + 1)) {
+		if (at > 0 && !/[\s([{]/.test(text[at - 1])) { continue; }
+		const rest = text.slice(at + 1);
+		for (const routine of candidates) {
+			const source = routine.name.trim().split(/\s+/).map(escapeRegExpCharacters).join('\\s+');
+			const match = new RegExp(`^${source}(?![\\p{L}\\p{M}\\p{N}_])`, 'iu').exec(rest);
+			if (match) { return { routine, start: at, end: at + 1 + match[0].length }; }
+		}
+	}
+	return undefined;
+}
+
+/** Removes the typed /task command and keeps inline references aligned in the child draft. */
+export function getAssistantLinkedTaskDraft(draft: IChatDraft): IChatDraft | undefined {
+	const command = draft.inputText.trim();
+	if (!command.startsWith('/task ')) { return undefined; }
+	const inputText = command.slice('/task '.length).trimStart();
+	if (!inputText) { return undefined; }
+	const prefixLength = draft.inputText.trimEnd().length - inputText.length;
+	const origin = TextLength.ofText(draft.inputText.slice(0, prefixLength)).toRange().getEndPosition();
+	return {
+		inputText,
+		attachments: draft.attachments.map(attachment => attachment.range ? {
+			...attachment, range: { start: attachment.range.start - prefixLength, endExclusive: attachment.range.endExclusive - prefixLength },
+		} : attachment),
+		references: draft.references?.map(reference => ({ ...reference, range: toRelativeRange(reference.range, origin) })),
+	};
+}
+
+/** Return the exact rendered selection, or the original Markdown for a whole-reply save. */
+export function assistantReplyPassage(element: HTMLElement, markdown: string): string | undefined {
+	const selection = element.ownerDocument.getSelection();
+	if (!selection || selection.isCollapsed || !selection.rangeCount) { return markdown; }
+	const range = selection.getRangeAt(0);
+	if (!range.intersectsNode(element)) { return markdown; }
+	return selection.rangeCount === 1 && element.contains(range.startContainer) && element.contains(range.endContainer) ? selection.toString() : undefined;
+}
+
+function ideaExcerpt(text: string): string {
+	const line = text.trim().replace(/\s+/g, ' ');
+	return line.length > 80 ? line.slice(0, 79) + '…' : line;
+}
+
+async function pickSavedIdea(quickInput: IQuickInputService, ideas: readonly IAssistantSavedIdea[], query: string, token: CancellationToken): Promise<IAssistantSavedIdea | undefined> {
+	const disposables = new DisposableStore();
+	const picker = disposables.add(quickInput.createQuickPick<IQuickPickItem & { idea: IAssistantSavedIdea }>());
+	try {
+		picker.title = localize('assistantView.savedIdeas', "Saved ideas");
+		picker.placeholder = localize('assistantView.savedIdeasHint', "Search passages and source chats");
+		picker.sortByLabel = false;
+		picker.value = query;
+		const filter = (value: string) => {
+			picker.items = searchAssistantSavedIdeas(ideas, value).map(idea => ({
+				label: escapeIcons(ideaExcerpt(idea.text)), description: escapeIcons(idea.sourceTitle),
+				detail: new Date(idea.createdAt).toLocaleString(), alwaysShow: true, idea,
+			}));
+		};
+		filter(query);
+		disposables.add(picker.onDidChangeValue(filter));
+		return await new Promise<IAssistantSavedIdea | undefined>(resolve => {
+			disposables.add(picker.onDidAccept(() => { resolve(picker.selectedItems[0]?.idea); picker.hide(); }));
+			disposables.add(picker.onDidHide(() => resolve(undefined)));
+			disposables.add(token.onCancellationRequested(() => picker.hide()));
+			picker.show();
+		});
+	} finally {
+		disposables.dispose();
+	}
+}
 
 const assistantSlashCommands: readonly IComposerSlashCommand[] = [
 	{ label: '/help', description: localize('assistantView.helpHelp', "Browse Assistant commands") },
@@ -78,7 +258,11 @@ const assistantSlashCommands: readonly IComposerSlashCommand[] = [
 	{ label: '/attach', description: localize('assistantView.helpAttach', "Attach a workspace file (picker or path)"), acceptsArguments: true },
 	{ label: '/model', description: localize('assistantView.helpModel', "Choose a REACH model") },
 	{ label: '/connect', description: localize('assistantView.helpConnect', "Connect an app to Assistant, for example /connect Slack"), acceptsArguments: true },
+	{ label: '/send-email', description: localize('assistantView.helpSendEmail', "Send through Gmail or Outlook without using a model"), acceptsArguments: true },
 	{ label: '/prompts', description: localize('assistantView.helpPrompts', "Use a prompt template from a connected app") },
+	{ label: '/skill', description: localize('assistantView.helpSkill', "Choose a skill or enter /skill <name> <request>"), acceptsArguments: true },
+	{ label: '/save', description: localize('assistantView.helpSaveIdea', "Save a passage from this draft with /save <text>"), acceptsArguments: true },
+	{ label: '/saved', description: localize('assistantView.helpSavedIdeas', "Find a saved idea with /saved [words]"), acceptsArguments: true },
 	{ label: '/resources', description: localize('assistantView.helpResources', "Attach readable content published by a connected app") },
 	{ label: '/tools', description: localize('assistantView.helpTools', "List the tools Assistant can use") },
 	{ label: '/briefing', description: localize('assistantView.helpBriefing', "Run or schedule a morning or evening briefing"), acceptsArguments: true },
@@ -87,6 +271,7 @@ const assistantSlashCommands: readonly IComposerSlashCommand[] = [
 	{ label: '/learn', description: localize('assistantView.helpLearn', "Learn from connected history and review proposed memories"), acceptsArguments: true },
 	{ label: '/memory', description: localize('assistantView.helpMemory', "Show saved memory; /forget edits it") },
 	{ label: '/forget', description: localize('assistantView.helpForget', "Choose which saved memories to keep") },
+	{ label: '/documents', description: localize('assistantView.helpDocuments', "Open or remove persistent Assistant documents") },
 	{ label: '/export', description: localize('assistantView.helpExport', "Copy the transcript as Markdown") },
 	{ label: '/search', description: localize('assistantView.helpSearch', "Filter the transcript — /search alone clears"), acceptsArguments: true },
 	{ label: '/copy', description: localize('assistantView.helpCopy', "Copy the last reply") },
@@ -99,11 +284,79 @@ const assistantSlashCommands: readonly IComposerSlashCommand[] = [
 	{ label: '/clear', description: localize('assistantView.helpClear', "Clear this conversation") },
 ];
 
+export interface IAssistantRoutineTemplate {
+	readonly id: string;
+	readonly name: string;
+	readonly description: string;
+	readonly prompt: string;
+	readonly cadence: IAssistantRoutineSettings['cadence'];
+	readonly hour: number;
+	readonly minute: number;
+	readonly sourceNames: readonly string[];
+}
+
+export const assistantRoutineTemplates: readonly IAssistantRoutineTemplate[] = [
+	{
+		id: 'morning-briefing',
+		name: localize('assistantView.templateMorningBriefing', "Morning briefing"),
+		description: localize('assistantView.templateMorningBriefingDescription', "Today's schedule, urgent messages, and the few things that need you first"),
+		prompt: 'Review today\'s calendar and important unread mail. Write a concise morning briefing with: first, the three most important things needing the user; second, today\'s schedule with preparation notes; third, messages that appear to need a reply; and fourth, one useful need-to-know update. Cite the calendar event or message source for each important item. Do not send, label, move, or change anything.',
+		cadence: 'daily', hour: 7, minute: 30,
+		sourceNames: ['calendar', 'gmail', 'outlook', 'microsoft 365'],
+	},
+	{
+		id: 'meeting-briefing',
+		name: localize('assistantView.templateMeetingBriefing', "Meeting briefing"),
+		description: localize('assistantView.templateMeetingBriefingDescription', "Research and preparation notes for the meetings ahead"),
+		prompt: 'Review the meetings scheduled for the next 24 hours. Skip low-signal holds and focus on meetings with other people. For each useful meeting, write a concise briefing with purpose, participants, relevant recent email or documents, open questions, and what the user should decide or prepare. Cite the event and source material. Do not change the calendar or send invitations.',
+		cadence: 'weekdays', hour: 7, minute: 0,
+		sourceNames: ['calendar', 'gmail', 'outlook', 'microsoft 365', 'drive', 'docs'],
+	},
+	{
+		id: 'inbox-triage',
+		name: localize('assistantView.templateInboxTriage', "Inbox triage"),
+		description: localize('assistantView.templateInboxTriageDescription', "Unread mail grouped by what needs a reply, a decision, or no action"),
+		prompt: 'Read unread and recent important mail. Group it into: needs a reply today, needs a decision, waiting on someone else, newsletters or low priority, and clearly no action. For each important message include sender, subject, why it matters, and a suggested next step. Cite message IDs or links. Do not label, archive, draft, or send mail.',
+		cadence: 'weekdays', hour: 8, minute: 0,
+		sourceNames: ['gmail', 'outlook', 'microsoft 365'],
+	},
+	{
+		id: 'github-report',
+		name: localize('assistantView.templateGithubReport', "GitHub report"),
+		description: localize('assistantView.templateGithubReportDescription', "Plain-English shipped, blocked, and review activity from open repositories"),
+		prompt: 'Review recent GitHub activity relevant to the user. Summarize what shipped, what is blocked, pull requests waiting on the user, important review comments, and notable failures or incidents. Group related work and explain it in plain English for a team status update. Include repository and pull request links. Do not comment, merge, close, or change anything.',
+		cadence: 'weekdays', hour: 16, minute: 0,
+		sourceNames: ['github'],
+	},
+	{
+		id: 'newsletter-digest',
+		name: localize('assistantView.templateNewsletterDigest', "Newsletter digest"),
+		description: localize('assistantView.templateNewsletterDigestDescription', "A concise digest of newsletters and low-urgency subscriptions"),
+		prompt: 'Find recent newsletters and subscription-style mail. Write a concise digest grouped by topic, with the few items actually worth reading, one-line takeaways, and links or message IDs. Omit repetitive promotions and say when nothing important was found. Do not label, archive, delete, or unsubscribe anything.',
+		cadence: 'daily', hour: 17, minute: 30,
+		sourceNames: ['gmail', 'outlook', 'microsoft 365'],
+	},
+	{
+		id: 'relationship-reconnect',
+		name: localize('assistantView.templateReconnect', "Relationship reconnect"),
+		description: localize('assistantView.templateReconnectDescription', "People worth reconnecting with based on recent contact history"),
+		prompt: 'Review recent mail and calendar activity for people the user has meaningfully interacted with but not contacted recently. Suggest up to five thoughtful reconnections, explaining the relationship context, why now is useful, and a short natural opening line. Do not send messages or create calendar events.',
+		cadence: 'weekdays', hour: 9, minute: 0,
+		sourceNames: ['calendar', 'gmail', 'outlook', 'microsoft 365', 'contacts'],
+	},
+];
+
+export function assistantRoutineTemplateServerIds(template: IAssistantRoutineTemplate, sources: readonly { readonly id: string; readonly label: string }[]): readonly string[] {
+	const wanted = template.sourceNames.map(name => name.toLowerCase());
+	return sources.filter(source => {
+		const label = source.label.toLowerCase();
+		return wanted.some(name => label.includes(name));
+	}).map(source => source.id);
+}
+
 const formatScheduleTime = ({ hour, minute }: IAssistantBriefingTime) => `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 
-function describeLastRoutineRun(routine: IAssistantRoutine): string {
-	const run = routine.lastRun;
-	if (!run) { return localize('assistantView.routineNeverRun', "No recorded runs"); }
+function describeAssistantRunStatus(status: NonNullable<IAssistantRoutine['lastRun']>['status']): string {
 	const statuses = {
 		running: localize('assistantView.routineRunning', "Running"),
 		completed: localize('assistantView.routineReportReady', "Report ready"),
@@ -112,10 +365,16 @@ function describeLastRoutineRun(routine: IAssistantRoutine): string {
 		stopped: localize('assistantView.routineRunStopped', "Stopped"),
 		interrupted: localize('assistantView.routineRunInterrupted', "Interrupted"),
 	};
+	return statuses[status];
+}
+
+function describeLastRoutineRun(routine: IAssistantRoutine): string {
+	const run = routine.lastRun;
+	if (!run) { return localize('assistantView.routineNeverRun', "No recorded runs"); }
 	const trigger = run.trigger === 'scheduled'
 		? localize('assistantView.routineScheduledRun', "Scheduled run")
 		: localize('assistantView.routineManualRun', "Manual run");
-	return localize('assistantView.routineLastRun', "{0} · {1} · {2}", statuses[run.status], trigger, new Date(run.startedAt).toLocaleString(undefined, { timeZone: routine.timeZone }));
+	return localize('assistantView.routineLastRun', "{0} · {1} · {2}", describeAssistantRunStatus(run.status), trigger, new Date(run.startedAt).toLocaleString(undefined, { timeZone: routine.timeZone }));
 }
 
 class AssistantView extends AbstractCustomView {
@@ -130,6 +389,7 @@ class AssistantView extends AbstractCustomView {
 
 	constructor(
 		private readonly routinesRequested: ISettableObservable<boolean>,
+		private readonly onDidRequestClearChat: Event<void>,
 		@IReachSubscriptionConnection private readonly reach: IReachSubscriptionConnection,
 		@ICommandService private readonly commands: ICommandService,
 		@IStorageService private readonly storage: IStorageService,
@@ -142,6 +402,7 @@ class AssistantView extends AbstractCustomView {
 		@IAssistantAgentChats private readonly agentChats: IAssistantAgentChats,
 		@IMcpService private readonly mcpService: IMcpService,
 		@IDialogService private readonly dialogs: IDialogService,
+		@IFileDialogService private readonly fileDialogs: IFileDialogService,
 		@IRequestService private readonly requestService: IRequestService,
 		@IFileService private readonly fileService: IFileService,
 		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
@@ -152,6 +413,9 @@ class AssistantView extends AbstractCustomView {
 		@ICustomViewService private readonly customViews: ICustomViewService,
 		@ISignalCDirectMail private readonly directMail: ISignalCDirectMail,
 		@IConfigurationService private readonly configuration: IConfigurationService,
+		@IPromptsService private readonly promptsService: IPromptsService,
+		@IEditorService private readonly editorService: IEditorService,
+		@IUntitledTextEditorService private readonly untitledTextEditors: IUntitledTextEditorService,
 	) {
 		super();
 	}
@@ -174,6 +438,40 @@ class AssistantView extends AbstractCustomView {
 				: localize('assistantView.routineInstructionsLength', "Enter instructions of 1 to 2,000 characters."),
 		}))?.trim();
 		if (!prompt || !current()) { return undefined; }
+		const senders = this.directMail.connections.get().filter(mail => mail.canSend && !mail.needsSignIn)
+			.map(mail => ({ id: mail.id, label: mail.label }));
+		const previousSender = defaults?.emailDelivery?.connectionId;
+		if (previousSender && !senders.some(sender => sender.id === previousSender)) {
+			senders.push({ id: previousSender, label: localize('assistantView.savedSender', "Saved mailbox (reconnect to send)") });
+		}
+		let emailDelivery: IAssistantRoutineSettings['emailDelivery'];
+		if (senders.length) {
+			const choices = [
+				{ label: localize('assistantView.routineInAssistant', "Show the result in Assistant"), email: false },
+				{ label: localize('assistantView.routineEmailDelivery', "Email the result after each completed run"), email: true },
+			];
+			const delivery = await this.quickInput.pick(choices, {
+				title: localize('assistantView.routineDelivery', "Routine delivery"),
+				activeItem: choices[previousSender ? 1 : 0],
+			});
+			if (!delivery || !current()) { return undefined; }
+			if (delivery.email) {
+				const sender = await this.quickInput.pick(senders, {
+					title: localize('assistantView.routineSender', "Choose the sending mailbox"),
+					activeItem: senders.find(item => item.id === previousSender),
+				});
+				if (!sender || !current()) { return undefined; }
+				const recipient = (await this.quickInput.input({
+					title: localize('assistantView.routineRecipient', "Routine email recipient"),
+					value: defaults?.emailDelivery?.recipient,
+					prompt: localize('assistantView.routineRecipientPrompt', "Enter one address to receive each completed routine. The routine name is the subject."),
+					validateInput: async value => isSignalCMailAddress(value.trim()) ? undefined
+						: localize('assistantView.routineRecipientInvalid', "Enter one complete email address."),
+				}))?.trim();
+				if (!recipient || !current()) { return undefined; }
+				emailDelivery = { connectionId: sender.id, recipient };
+			}
+		}
 		const sources = this.mcpService.servers.get()
 			.filter(server => isContributionEnabled(server.enablement.get()))
 			.map(server => {
@@ -186,12 +484,14 @@ class AssistantView extends AbstractCustomView {
 				description: mail.needsSignIn ? localize('assistantView.directMailSignIn', "Sign-in required") : localize('assistantView.directMailReadOnly', "Read-only"),
 			});
 		}
-		const selected = await this.quickInput.pick(sources, {
+		const selected = sources.length ? await this.quickInput.pick(sources, {
 			canPickMany: true,
 			title: localize('assistantView.routineSources', "Choose connections for this routine"),
-			placeHolder: localize('assistantView.routineSourcesHint', "Choose one or more connections. Each run uses read-only tools."),
-		});
-		if (!selected?.length || !current()) { return undefined; }
+			placeHolder: emailDelivery
+				? localize('assistantView.routineOptionalSourcesHint', "Choose read-only sources for the email, or continue with none.")
+				: localize('assistantView.routineSourcesHint', "Choose one or more connections. Each run uses read-only tools."),
+		}) : [];
+		if (!selected || (!selected.length && !emailDelivery) || !current()) { return undefined; }
 		const days = [
 			{ label: localize('assistantView.routineDaily', "Daily"), cadence: 'daily' as const },
 			{ label: localize('assistantView.routineWeekdays', "Weekdays"), cadence: 'weekdays' as const },
@@ -205,11 +505,13 @@ class AssistantView extends AbstractCustomView {
 		const value = await this.quickInput.input({
 			title: localize('assistantView.routineTime', "Confirm routine schedule"),
 			value: formatScheduleTime({ hour: defaults?.hour ?? 8, minute: defaults?.minute ?? 0 }),
-			prompt: localize('assistantView.routineTimePrompt', "Confirm a 24-hour time in {0} to save. Routines run while Agents is open.", timeZone),
+			prompt: emailDelivery
+				? localize('assistantView.routineEmailTimePrompt', "Confirm a 24-hour time in {0} to save automatic delivery to {1}. Routines run while Agents is open.", timeZone, emailDelivery.recipient)
+				: localize('assistantView.routineTimePrompt', "Confirm a 24-hour time in {0} to save. Routines run while Agents is open.", timeZone),
 			validateInput: async value => parseAssistantBriefingTime(value) ? undefined : localize('assistantView.briefingInvalidTime', "Enter a 24-hour time, for example 08:00."),
 		});
 		const time = value === undefined ? undefined : parseAssistantBriefingTime(value);
-		return time && current() ? { ...time, name, prompt, cadence: schedule.cadence, serverIds: selected.map(source => source.id) } : undefined;
+		return time && current() ? { ...time, name, prompt, cadence: schedule.cadence, serverIds: selected.map(source => source.id), emailDelivery } : undefined;
 	}
 
 	render(container: HTMLElement): void {
@@ -236,6 +538,7 @@ class AssistantView extends AbstractCustomView {
 			readNewsFeeds: scope => this.reach.readAssistantNewsFeeds(scope),
 			readWeatherForecast: (day, location) => this.reach.readAssistantWeatherForecast(day, location),
 			configuration: this.configuration,
+			promptsService: this.configuration.getValue<boolean>(PromptsConfig.USE_AGENT_SKILLS) ? this.promptsService : undefined,
 			workspaceService: this.workspaceService, searchService: this.searchService, openerService: this.openerService,
 			agentChats: this.agentChats, agentChatTarget: this.agentChats.target, connectApp: appId => this.runs.openAppSetup(appId),
 		});
@@ -247,7 +550,8 @@ class AssistantView extends AbstractCustomView {
 		const thread = append(chat, $('.reach-assistant-thread'));
 		const welcome = append(thread, $('.reach-assistant-welcome'));
 		append(welcome, $('span' + ThemeIcon.asCSSSelector(Codicon.sparkle), { 'aria-hidden': 'true' }));
-		append(welcome, $('h2', {}, localize('assistantView.welcome', "How can I help?")));
+		const welcomeTitle = append(welcome, $('h2'));
+		const welcomeDetail = append(welcome, $('p.reach-assistant-muted.reach-assistant-greeting-detail', { hidden: true }));
 		const suggestions = append(welcome, $('.reach-assistant-suggestions'));
 		append(welcome, $('p.reach-assistant-muted.reach-assistant-commands', {}, localize('assistantView.commands', "Commands: {0}", assistantSlashCommands.map(command => command.label).join(' · '))));
 		const taskUpdates = append(thread, $('section.reach-assistant-task-updates', { 'aria-label': localize('assistantView.tasksAria', "Linked tasks"), hidden: true }));
@@ -289,7 +593,7 @@ class AssistantView extends AbstractCustomView {
 		append(modelButton, $('span.reach-assistant-model-icon' + ThemeIcon.asCSSSelector(Codicon.sparkle), { 'aria-hidden': 'true' }));
 		const modelLabel = append(modelButton, $('span.reach-assistant-control-label'));
 		append(modelButton, $('span' + ThemeIcon.asCSSSelector(Codicon.chevronDown), { 'aria-hidden': 'true' }));
-		const worktreeButton = append(controls, $<HTMLButtonElement>('button.reach-assistant-control.reach-assistant-worktree', { type: 'button', 'aria-haspopup': 'listbox', hidden: true }));
+		const worktreeButton = append(controls, $<HTMLButtonElement>('button.reach-assistant-control.reach-assistant-worktree', { type: 'button', 'aria-haspopup': 'listbox' }));
 		append(worktreeButton, $('span' + ThemeIcon.asCSSSelector(SESSION_WORKTREE_ICON), { 'aria-hidden': 'true' }));
 		const worktreeLabel = append(worktreeButton, $('span.reach-assistant-control-label'));
 		const newTaskLabel = localize('assistantView.newTask', "New task");
@@ -299,9 +603,13 @@ class AssistantView extends AbstractCustomView {
 		append(newTask, $('span' + ThemeIcon.asCSSSelector(Codicon.add), { 'aria-hidden': 'true' }));
 		append(newTask, $('span.reach-assistant-control-label', {}, newTaskLabel));
 		const agentChatsLabel = localize('assistantView.agentChats', "Agent Chats");
-		const agentChatsButton = append(controls, $('button.reach-assistant-control.reach-assistant-agent-chats', { type: 'button', 'aria-haspopup': 'listbox', 'aria-label': agentChatsLabel, title: agentChatsLabel, hidden: true }));
+		const agentChatsButton = append(controls, $('button.reach-assistant-control.reach-assistant-agent-chats', { type: 'button', 'aria-haspopup': 'listbox', 'aria-label': agentChatsLabel, title: agentChatsLabel }));
 		append(agentChatsButton, $('span' + ThemeIcon.asCSSSelector(Codicon.commentDiscussion), { 'aria-hidden': 'true' }));
 		append(agentChatsButton, $('span.reach-assistant-control-label', {}, agentChatsLabel));
+		const savedIdeasLabel = localize('assistantView.savedIdeas', "Saved ideas");
+		const savedIdeasButton = append(controls, $('button.reach-assistant-control', { type: 'button', 'aria-haspopup': 'listbox', 'aria-label': savedIdeasLabel, title: savedIdeasLabel }));
+		append(savedIdeasButton, $('span' + ThemeIcon.asCSSSelector(Codicon.bookmark), { 'aria-hidden': 'true' }));
+		append(savedIdeasButton, $('span.reach-assistant-control-label', {}, savedIdeasLabel));
 		const feedback = append(dock, $('p.reach-assistant-feedback', { role: 'status', hidden: true }));
 		const editingRow = append(dock, $('p.reach-assistant-editing', { role: 'status', hidden: true }));
 		append(editingRow, $('span' + ThemeIcon.asCSSSelector(Codicon.edit), { 'aria-hidden': 'true' }));
@@ -310,6 +618,7 @@ class AssistantView extends AbstractCustomView {
 		const counter = append(dock, $('span.reach-assistant-counter', { role: 'status', hidden: true }));
 
 		const threadWatch = this._register(new MutableDisposable<DisposableStore>());
+		const savedIdeasPicker = this._register(new MutableDisposable<DisposableStore>());
 		const renderedTurns = this._register(new DisposableStore());
 		const taskListeners = this._register(new DisposableStore());
 		const suggestionListeners = this._register(new DisposableStore());
@@ -330,6 +639,7 @@ class AssistantView extends AbstractCustomView {
 		};
 		let models: readonly ReachAssistantModel[] = [];
 		let turnCount = -1;
+		let lastRenderedTurn: IAssistantTurn | undefined;
 		let searchQuery = '';
 		let wasPending = false;
 		let settingInput = false;
@@ -340,7 +650,7 @@ class AssistantView extends AbstractCustomView {
 			if (accountId) { this.runs.stop(accountId, taskId); }
 		};
 		const lastTaskStatuses = new Map<string, string>();
-		let editingFrom: { index: number; accountId: string; taskId: string | undefined } | undefined;
+		let editingFrom: { index: number; original: readonly IAssistantTurn[]; accountId: string; taskId: string | undefined } | undefined;
 		const setEditingFrom = (value: typeof editingFrom) => {
 			editingFrom = value;
 			editingRow.hidden = !value;
@@ -364,6 +674,44 @@ class AssistantView extends AbstractCustomView {
 			}
 			feedback.hidden = !message && !action;
 		};
+		let clearChatDialogOpen = false;
+		const clearChat = async () => {
+			const owner = accountId;
+			const id = taskId;
+			if (!owner || clearChatDialogOpen) { return; }
+			if (this.runs.getPendingDetail(owner, id)) {
+				setFeedback(localize('assistantView.clearChatBusy', "Wait for the current reply before clearing this chat."));
+				return;
+			}
+			const turns = store.read(owner, id).turns;
+			if (!turns.length) {
+				setFeedback(localize('assistantView.clearChatEmpty', "This chat is already empty."));
+				return;
+			}
+			clearChatDialogOpen = true;
+			try {
+				const { confirmed } = await this.dialogs.confirm({
+					custom: true,
+					type: 'warning',
+					message: localize('assistantView.clearChatConfirm', "Are you sure you want to clear this chat?"),
+					detail: localize('assistantView.clearChatDetail', "This permanently removes the messages in the current chat."),
+					primaryButton: localize('assistantView.clearChatButton', "Clear Chat"),
+				});
+				if (!confirmed || this._store.isDisposed || accountId !== owner || taskId !== id) { return; }
+				const current = store.read(owner, id).turns;
+				if (this.runs.getPendingDetail(owner, id) || current.length !== turns.length || current.at(-1)?.at !== turns.at(-1)?.at) {
+					setFeedback(localize('assistantView.clearChatChanged', "This chat changed while the dialog was open. Open Clear Chat again to review."));
+					return;
+				}
+				searchQuery = '';
+				setEditingFrom(undefined);
+				store.clearTurns(owner, id);
+				setFeedback(localize('assistantView.cleared', "Conversation cleared."));
+			} finally {
+				clearChatDialogOpen = false;
+			}
+		};
+		this._register(this.onDidRequestClearChat(() => void clearChat()));
 		const worktreeTitle = localize('assistantView.worktreePicker', "Choose Assistant worktree");
 		const getWorktreeProject = () => {
 			const target = this.agentChats.target;
@@ -380,19 +728,16 @@ class AssistantView extends AbstractCustomView {
 		};
 		const updateWorktreeLabel = () => {
 			const selected = this.agentChats.target?.worktree;
-			worktreeButton.hidden = getWorktreeProject()?.scheme !== Schemas.file;
 			worktreeLabel.textContent = selected?.label ?? localize('assistantView.worktree', "Worktree");
 			worktreeButton.title = selected ? `${worktreeTitle}\n${selected.uri.fsPath}` : worktreeTitle;
 			worktreeButton.setAttribute('aria-label', selected ? localize('assistantView.activeWorktree', "Choose Assistant worktree. Current worktree: {0}", selected.label) : worktreeTitle);
 		};
 		const pickWorktree = async () => {
-			const workspace = getWorktreeProject();
-			if (workspace?.scheme !== Schemas.file) {
-				setFeedback(localize('assistantView.worktreeLocalProject', "Select a local Git project in Agents to choose a worktree."));
-				return;
-			}
 			if (!accountId || worktreeButton.disabled) { return; }
 			const target = this.agentChats.target;
+			const project = getWorktreeProject();
+			const localProject = project?.scheme === Schemas.file ? project : undefined;
+			const currentWorktree = localProject ? target?.worktree : undefined;
 			const account = accountId;
 			const task = taskId;
 			const taskRunning = () => !!task && !!this.runs.getPending(account, task);
@@ -402,11 +747,19 @@ class AssistantView extends AbstractCustomView {
 			}
 			const stillCurrent = () => !this._store.isDisposed && accountId === account && taskId === task && this.agentChats.target === target && !taskRunning();
 			worktreeButton.disabled = true;
-			setFeedback(localize('assistantView.loadingWorktrees', "Finding Git worktrees…"));
 			try {
+				const workspace = localProject ?? (await this.fileDialogs.showOpenDialog({
+					title: localize('assistantView.worktreeLocalProject', "Choose a local Git project"),
+					canSelectFiles: false,
+					canSelectFolders: true,
+					canSelectMany: false,
+					availableFileSystems: [Schemas.file],
+				}))?.[0];
+				if (workspace?.scheme !== Schemas.file || !stillCurrent()) { return; }
+				setFeedback(localize('assistantView.loadingWorktrees', "Finding Git worktrees…"));
 				const repo = await this.gitService.openRepository(workspace);
 				if (!stillCurrent()) { return; }
-				if (!repo && !target?.worktree) {
+				if (!repo && !currentWorktree) {
 					setFeedback(localize('assistantView.noGitRepository', "Couldn’t open the Git repository for this project."));
 					return;
 				}
@@ -424,18 +777,18 @@ class AssistantView extends AbstractCustomView {
 				}));
 				if (!stillCurrent()) { return; }
 				const choices = worktrees.filter(worktree => worktree !== undefined);
-				if (!choices.length && !target?.worktree) {
+				if (!choices.length && !currentWorktree) {
 					setFeedback(localize('assistantView.noWorktrees', "No Git worktrees were found for this project."));
 					return;
 				}
 				setFeedback('');
 				const items: (IQuickPickItem & { worktree?: IAssistantAgentTarget['worktree'] })[] = choices.map(worktree => ({
 					label: escapeIcons(worktree.label),
-					description: extUriBiasedIgnorePathCase.isEqual(worktree.uri, target?.worktree?.uri) ? localize('assistantView.selectedWorktree', "Selected") : worktree.main ? localize('assistantView.mainWorktree', "Main checkout") : undefined,
+					description: extUriBiasedIgnorePathCase.isEqual(worktree.uri, currentWorktree?.uri) ? localize('assistantView.selectedWorktree', "Selected") : worktree.main ? localize('assistantView.mainWorktree', "Main checkout") : undefined,
 					detail: escapeIcons(worktree.uri.fsPath),
 					worktree,
 				}));
-				if (target?.worktree) {
+				if (currentWorktree) {
 					items.push({ label: localize('assistantView.useProjectDefaults', "Use project defaults"), detail: localize('assistantView.clearWorktreeDetail', "Clear the explicit worktree selection") });
 				}
 				const selected = await this.quickInput.pick(items, { title: worktreeTitle, placeHolder: localize('assistantView.worktreeSearch', "Filter by branch or path"), matchOnDescription: true, matchOnDetail: true });
@@ -448,14 +801,14 @@ class AssistantView extends AbstractCustomView {
 					if (!stillCurrent()) { return; }
 					if (error) { setFeedback(error); return; }
 				}
-				const nextTarget = this.agentChats.target = { ...target, workspace, worktree };
+				const nextTarget = this.agentChats.target = { ...(localProject ? target : undefined), workspace: localProject ?? repo?.rootUri ?? workspace, worktree };
 				if (task) {
 					store.updateTask(account, task, { target: storeAssistantTaskTarget(captureAssistantTaskTarget(this.workspaceService, nextTarget)) });
 				} else {
 					rootTarget = nextTarget;
-					rootProject = workspace;
-					store.setWorktreeSelection(account, workspace, worktree);
-					store.setLastWorktreeProject(account, workspace);
+					rootProject = nextTarget.workspace;
+					store.setWorktreeSelection(account, rootProject, worktree);
+					store.setLastWorktreeProject(account, rootProject);
 				}
 				updateWorktreeLabel();
 				renderSuggestions();
@@ -523,6 +876,150 @@ class AssistantView extends AbstractCustomView {
 		};
 		const saveDraft = this._register(new RunOnceScheduler(() => this.saveDraft?.(), 250));
 		this._register(this.storage.onWillSaveState(() => this.saveDraft?.()));
+		let verifiedAccountCheck = this.accountCheck;
+		const saveIdea = (owner: string, thread: string | undefined, text: string): boolean => {
+			if (this.accountCheck !== verifiedAccountCheck) { return false; }
+			const source = thread ? store.read(owner).tasks?.find(task => task.id === thread)?.title || localize('assistantView.newTask', "New task") : localize('assistantView.title', "Assistant");
+			const result = store.saveIdea(owner, text, source, thread);
+			switch (result.status) {
+				case 'saved': setFeedback(localize('assistantView.ideaSaved', "Saved to Saved ideas.")); return true;
+				case 'duplicate': setFeedback(localize('assistantView.ideaDuplicate', "This passage is already in Saved ideas.")); return true;
+				case 'empty': setFeedback(localize('assistantView.ideaEmpty', "Enter text after /save, or select a passage in a reply.")); return false;
+				case 'tooLong': setFeedback(localize('assistantView.ideaLong', "Choose a shorter passage. A saved idea can contain up to {0} characters.", ASSISTANT_SAVED_IDEA_TEXT_LIMIT)); return false;
+				case 'full': setFeedback(localize('assistantView.ideaFull', "Saved ideas has reached its limit of {0}. Remove an idea to make room.", ASSISTANT_SAVED_IDEAS_LIMIT)); return false;
+			}
+		};
+		const browseSavedIdeas = async (query = '', fromCommand = false): Promise<void> => {
+			const owner = accountId;
+			const thread = taskId;
+			const composer = this.composer;
+			const revision = draftRevision;
+			const accountCheck = this.accountCheck;
+			const activeTarget = this.agentChats.target;
+			if (!owner || !composer || accountCheck !== verifiedAccountCheck) { return; }
+			const original = composer.getInputValue();
+			const session = savedIdeasPicker.value = new DisposableStore();
+			const token = cancelOnDispose(session);
+			const current = () => !token.isCancellationRequested && this.accountCheck === accountCheck && accountId === owner && taskId === thread
+				&& this.agentChats.target === activeTarget && draftRevision === revision && this.composer?.getInputValue() === original;
+			try {
+				const ideas = store.listSavedIdeas(owner);
+				if (!ideas.length) {
+					setFeedback(localize('assistantView.noSavedIdeas', "No saved ideas yet. Use Save reply or enter /save followed by a passage."));
+					return;
+				}
+				const idea = await pickSavedIdea(this.quickInput, ideas, query, token);
+				if (!idea || !current()) { return; }
+				const action = await this.quickInput.pick([
+					{ label: localize('assistantView.attachSavedIdea', "Attach to draft"), id: 'attach' },
+					{ label: localize('assistantView.continueSavedIdea', "Continue in task"), id: 'continue' },
+					{ label: localize('assistantView.copySavedIdea', "Copy passage"), id: 'copy' },
+					{ label: localize('assistantView.removeSavedIdea', "Remove saved idea"), id: 'remove' },
+				], { title: localize('assistantView.useSavedIdea', "Use saved idea"), placeHolder: ideaExcerpt(idea.text) }, token);
+				if (!action || !current()) { return; }
+				if (!store.isCurrentSavedIdea(owner, idea)) {
+					setFeedback(localize('assistantView.ideaGone', "This idea has already been removed."));
+					return;
+				}
+				const label = localize('assistantView.ideaAttachment', "Saved idea · {0}", ideaExcerpt(idea.text).replace(/["<>]/g, ''));
+				if (action.id === 'continue') {
+					const target = captureAssistantTaskTarget(this.workspaceService, activeTarget);
+					const destination = store.getOrCreateSavedIdeaTask(owner, idea.id, ideaExcerpt(idea.text), label, target);
+					if (destination === 'tooLong') {
+						setFeedback(localize('assistantView.ideaTaskTooLong', "This passage leaves no room for a message in a new task. Copy it or save a shorter passage."));
+						return;
+					}
+					if (!destination) { return; }
+					if (fromCommand) { setInput(''); this.saveDraft?.(); }
+					if (destination.taskId !== taskId) { openThread(destination.taskId); } else { composer.focus(); }
+					return;
+				}
+				if (action.id === 'copy') {
+					await this.clipboard.writeText(idea.text);
+					if (!current()) { return; }
+					setFeedback(localize('assistantView.ideaCopied', "Passage copied."));
+				} else if (action.id === 'remove') {
+					store.removeSavedIdea(owner, idea.id);
+					setFeedback(localize('assistantView.ideaRemoved', "Saved idea removed."));
+				} else {
+					const id = `assistant-saved:${idea.id}`;
+					const draft = composer.getDraft();
+					const alreadyAttached = draft.attachments.some(item => item.id === id);
+					if (!alreadyAttached) {
+						const attachedLength = draft.attachments.reduce((length, item) => typeof item.value === 'string' ? length + assistantTextAttachment(item.fullName ?? item.name, item.value).length : length, 0);
+						if ((fromCommand ? 0 : original.length) + attachedLength + assistantTextAttachment(label, idea.text).length > REACH_ASSISTANT_PROMPT_LIMIT) {
+							setFeedback(localize('assistantView.ideaAttachTooLong', "This idea and draft exceed the {0}-character message limit. Copy the passage or shorten the draft.", REACH_ASSISTANT_PROMPT_LIMIT));
+							return;
+						}
+						if (fromCommand) { setInput(''); }
+						composer.attachTextContext(label, idea.text, Codicon.bookmark, id);
+						this.saveDraft?.();
+						composer.focus();
+						setFeedback(localize('assistantView.ideaAttached', "Saved idea attached to the draft."));
+						return;
+					}
+					setFeedback(localize('assistantView.ideaAlreadyAttached', "This idea is already attached to the draft."));
+				}
+				if (fromCommand) { setInput(''); this.saveDraft?.(); }
+				this.composer?.focus();
+			} finally {
+				if (savedIdeasPicker.value === session) { savedIdeasPicker.clear(); }
+			}
+		};
+		const attachSkill = async (name?: string, request = ''): Promise<boolean> => {
+			const owner = accountId;
+			const thread = taskId;
+			const revision = draftRevision;
+			const original = this.composer?.getInputValue();
+			const target = this.agentChats.target;
+			const current = () => !this._store.isDisposed && accountId === owner && taskId === thread && draftRevision === revision
+				&& this.agentChats.target === target && this.composer?.getInputValue() === original;
+			try {
+				const folders = await attachmentFolders();
+				if (!folders || !current()) { return false; }
+				const scope = await getAssistantSkillScope(folders, this.workspaceService, this.agentChats);
+				const skills = this.configuration.getValue<boolean>(PromptsConfig.USE_AGENT_SKILLS)
+					? await listAssistantSkills(this.promptsService, scope, 'user', CancellationToken.None) : [];
+				if (!current()) { return false; }
+				if (!skills.length) {
+					setFeedback(localize('assistantView.noSkills', "No enabled skills are available for this Assistant chat."));
+					return true;
+				}
+				const skill = name ? skills.find(skill => skill.name.toLowerCase() === name.toLowerCase()) : (await this.quickInput.pick(
+					skills.map(skill => ({ label: skill.name, description: skill.pluginLabel ?? skill.extension?.displayName, detail: skill.description, skill })),
+					{ title: localize('assistantView.skillsTitle', "Choose an Assistant skill"), matchOnDetail: true },
+				))?.skill;
+				if (!current()) { return false; }
+				if (!skill) {
+					if (name) { setFeedback(localize('assistantView.unknownSkill', "Skill {0} is unavailable. Use /skill to choose an enabled skill.", name)); }
+					return true;
+				}
+				if (scope.roots && skill.storage === PromptsStorage.local && !await this.agentChats.isResourceTrusted(skill.uri)) {
+					if (current()) { setFeedback(localize('assistantView.skillUntrusted', "This skill’s folder is no longer trusted.")); }
+					return true;
+				}
+				const parsed = await this.promptsService.parseNew(skill.uri, CancellationToken.None);
+				if (!current()) { return false; }
+				const instructions = parsed.body?.getContent().trim();
+				if (!instructions || !this.configuration.getValue<boolean>(PromptsConfig.USE_AGENT_SKILLS) || parsed.header?.userInvocable === false || this.promptsService.getDisabledPromptFiles(PromptsType.skill).has(skill.uri)) {
+					setFeedback(localize('assistantView.skillUnavailable', "This skill has no available instructions."));
+					return true;
+				}
+				const label = localize('assistantView.skillAttachment', "Skill · {0}", skill.name);
+				if ((assistantTextAttachment(label, instructions) + request).length > REACH_ASSISTANT_PROMPT_LIMIT) {
+					setFeedback(localize('assistantView.skillTooLong', "This skill and request exceed the {0}-character message limit.", REACH_ASSISTANT_PROMPT_LIMIT));
+					return true;
+				}
+				setInput(request);
+				this.composer?.attachTextContext(label, instructions, Codicon.book, `assistant-skill:${skill.uri}`);
+				this.saveDraft?.();
+				setFeedback(localize('assistantView.skillAttached', "Attached {0}. Review your request and send it when ready.", skill.name));
+				this.composer?.focus();
+			} catch {
+				if (current()) { setFeedback(localize('assistantView.skillFailed', "Could not read the skill. Reopen /skill to check the available skills.")); }
+			}
+			return true;
+		};
 		const browsePrompts = async (onlyServer?: IMcpServer): Promise<void> => {
 			const items: { label: string; description?: string; detail?: string; prompt: { arguments: readonly { name: string; description?: string; required?: boolean }[]; resolve(args: Record<string, string | undefined>): Promise<readonly { content: { type: string; text?: string } }[]> } }[] = [];
 			for (const server of this.mcpService.servers.get()) {
@@ -606,6 +1103,7 @@ class AssistantView extends AbstractCustomView {
 			}
 		};
 		const routineScheduler = () => this.instantiation.invokeFunction(accessor => accessor.get(IAssistantBriefingScheduler));
+		this.instantiation.invokeFunction(accessor => accessor.get(IAssistantMailWatcher)).start();
 		const saveRoutine = async (owner: string, defaults?: Partial<IAssistantRoutineSettings>, routineId?: string) => {
 			const current = () => !this._store.isDisposed && accountId === owner && !taskId;
 			if (!this.directMail.connections.get().length && !this.mcpService.servers.get().some(server => isContributionEnabled(server.enablement.get()))) {
@@ -615,7 +1113,13 @@ class AssistantView extends AbstractCustomView {
 				return false;
 			}
 			try {
-				const settings = await this.pickRoutineSettings(current, defaults, !!routineId);
+				const template = assistantRoutineTemplates.find(candidate => candidate.id === (defaults as IAssistantRoutineTemplate | undefined)?.id);
+				const serverIds = template && !defaults?.serverIds ? assistantRoutineTemplateServerIds(template, [
+					...this.mcpService.servers.get().filter(server => isContributionEnabled(server.enablement.get()))
+						.map(server => ({ id: assistantConnectionKey(server), label: server.definition.label })),
+					...this.directMail.connections.get().map(mail => ({ id: mail.id, label: mail.label })),
+				]) : undefined;
+				const settings = await this.pickRoutineSettings(current, serverIds ? { ...defaults, serverIds } : defaults, !!routineId);
 				if (!settings || !current()) { return false; }
 				const saved = await routineScheduler().saveRoutine(owner, settings, routineId);
 				if (current()) {
@@ -664,7 +1168,7 @@ class AssistantView extends AbstractCustomView {
 							: localize('assistantView.routinePaused', "Paused"),
 						detail: localize('assistantView.routineDetails', "{0} at {1} ({2}) · {3} connection(s) · {4}", routine.cadence === 'daily'
 							? localize('assistantView.routineDaily', "Daily") : localize('assistantView.routineWeekdays', "Weekdays"),
-						formatScheduleTime(routine), routine.timeZone, routine.serverIds.length, describeLastRoutineRun(routine)),
+							formatScheduleTime(routine), routine.timeZone, routine.serverIds.length, describeLastRoutineRun(routine)),
 					})),
 				], { title: localize('assistantView.routines', "Assistant routines") });
 				if (!item || !current()) { return false; }
@@ -723,10 +1227,26 @@ class AssistantView extends AbstractCustomView {
 						message = localize('assistantView.routineDeleted', "Routine deleted.");
 						break;
 					}
-					default:
-						updated = await saveRoutine(owner, routine, routine?.id);
+					default: {
+						if (routine) {
+							updated = await saveRoutine(owner, routine, routine.id);
+						} else {
+							const blank = { label: localize('assistantView.blankRoutine', "Start from scratch"), template: undefined };
+							const choice = await this.quickInput.pick([
+								blank,
+								...assistantRoutineTemplates.map(template => ({
+									label: template.name,
+									description: template.description,
+									detail: localize('assistantView.routineTemplateDetail', "Suggested: {0} at {1} · Uses matching {2} connections when available", template.cadence === 'daily' ? localize('assistantView.routineDaily', "Daily") : localize('assistantView.routineWeekdays', "Weekdays"), formatScheduleTime(template), template.sourceNames.join(', ')),
+									template,
+								})),
+							], { title: localize('assistantView.routineTemplates', "Choose a routine") });
+							if (!choice || !current()) { return false; }
+							updated = await saveRoutine(owner, choice.template, undefined);
+						}
 						if (updated && current()) { clearRoutineCommand(); }
 						return updated;
+					}
 				}
 				if (current()) {
 					setFeedback(updated ? message : localize('assistantView.routineChanged', "This routine has changed. Open /routine again to refresh the list."));
@@ -738,9 +1258,22 @@ class AssistantView extends AbstractCustomView {
 				return false;
 			}
 		};
+		let submittingEmail = false;
 		const submit = async (): Promise<boolean> => {
 			let input = this.composer?.getInputValue().trim();
 			if (!accountId || !input) { return false; }
+			const initialInput = input;
+			if (/^\/save(?:\s|$)/i.test(input)) {
+				const passage = this.composer!.getInputValue().trimStart().replace(/^\/save(?:\r\n|\s)?/i, '');
+				if (!saveIdea(accountId, taskId, passage)) { return false; }
+				setInput('');
+				this.saveDraft?.();
+				return true;
+			}
+			if (/^\/saved(?:\s|$)/i.test(input)) {
+				await browseSavedIdeas(input.slice('/saved'.length).trim(), true);
+				return true;
+			}
 			if (/^\/weather(?:\s|$)/i.test(input)) {
 				const owner = accountId;
 				const thread = taskId;
@@ -799,6 +1332,9 @@ class AssistantView extends AbstractCustomView {
 						return {
 							label: localize('assistantView.briefingSchedule', "Schedule {0}", ASSISTANT_BRIEFINGS[period].name),
 							description: schedule ? localize('assistantView.briefingScheduledTime', "Daily at {0} ({1})", formatScheduleTime(schedule), schedule.timeZone) : localize('assistantView.briefingDaily', "Daily while Agents is open"),
+							detail: schedule?.lastRun ? localize('assistantView.briefingLastRun', "Last run: {0} · {1}",
+								schedule.lastRun.retryAt === undefined ? describeAssistantRunStatus(schedule.lastRun.status) : localize('assistantView.briefingRetryScheduled', "Failed; retry scheduled"),
+								new Date(schedule.lastRun.startedAt).toLocaleString(undefined, { timeZone: schedule.timeZone })) : undefined,
 							period, action: 'schedule' as const,
 						};
 					}),
@@ -840,29 +1376,199 @@ class AssistantView extends AbstractCustomView {
 				setFeedback(taskId ? localize('assistantView.taskFromMain', "Return to Assistant to start a linked task.") : localize('assistantView.taskNeedsDescription', "Add a description after /task to start a linked task."));
 				return false;
 			}
+			const owner = accountId;
+			const threadId = taskId;
+			const commandRevision = draftRevision;
+			const commandIsCurrent = () => !this._store.isDisposed && accountId === owner && taskId === threadId
+				&& draftRevision === commandRevision && this.composer?.getInputValue().trim() === initialInput;
+			if (input === '/documents') {
+				const documents = store.listDocuments(owner);
+				if (!documents.length) {
+					setFeedback(localize('assistantView.noDocuments', "No Assistant documents yet. Ask for a report, proposal, plan, or draft and Assistant can save one."));
+				} else {
+					const pick = await this.quickInput.pick(documents.map(document => {
+						const firstLine = document.content.trim().split('\n').map(line => line.replace(/^#+\s*/, '').trim()).find(line => !!line) ?? '';
+						return {
+							document,
+							label: document.title,
+							description: localize('assistantView.documentUpdated', "Updated {0}", new Date(document.updatedAt).toLocaleString()),
+							detail: firstLine.length > 160 ? `${firstLine.slice(0, 160)}…` : firstLine,
+						};
+					}), { title: localize('assistantView.documentsTitle', "Assistant documents"), matchOnDescription: true, matchOnDetail: true });
+					if (!commandIsCurrent()) { return false; }
+					if (pick) {
+						const action = await this.quickInput.pick([
+							{ label: localize('assistantView.openDocumentAction', "Open"), id: 'open' },
+							{ label: localize('assistantView.copyDocumentAction', "Copy"), id: 'copy' },
+							{ label: localize('assistantView.exportDocumentAction', "Export as Markdown…"), id: 'export' },
+							{ label: localize('assistantView.deleteDocumentAction', "Delete"), id: 'delete' },
+						], { title: pick.document.title });
+						if (!commandIsCurrent()) { return false; }
+						if (action?.id === 'open') {
+							const latest = store.readDocument(owner, pick.document.id);
+							if (latest) { await openReplyDocument(latest.content, { accountId: owner, documentId: pick.document.id }); }
+							else { setFeedback(localize('assistantView.documentMissing', "This document is no longer available.")); }
+						} else if (action?.id === 'copy') {
+							const latest = store.readDocument(owner, pick.document.id);
+							if (latest) {
+								await this.clipboard.writeText(latest.content);
+								setFeedback(localize('assistantView.documentCopied', "Document copied."));
+							} else { setFeedback(localize('assistantView.documentMissing', "This document is no longer available.")); }
+						} else if (action?.id === 'export') {
+							const latest = store.readDocument(owner, pick.document.id);
+							if (!latest) { setFeedback(localize('assistantView.documentMissing', "This document is no longer available.")); }
+							else {
+								const baseName = (latest.title.replace(/[\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim() || 'assistant-document').slice(0, 80);
+								const target = await this.fileDialogs.showSaveDialog({
+									title: localize('assistantView.exportDocumentTitle', "Export Assistant document"),
+									defaultUri: joinPath(await this.fileDialogs.defaultFilePath(), `${baseName}.md`),
+								});
+								if (!commandIsCurrent()) { return false; }
+								if (target) {
+									try {
+										await this.fileService.writeFile(target, VSBuffer.fromString(latest.content));
+										setFeedback(localize('assistantView.documentExported', "Document exported."));
+									} catch {
+										setFeedback(localize('assistantView.documentExportFailed', "The document could not be exported."));
+									}
+								}
+							}
+						} else if (action?.id === 'delete') {
+							const answer = await this.dialogs.confirm({
+								message: localize('assistantView.deleteDocumentConfirm', "Delete the document “{0}”?", pick.document.title),
+								primaryButton: localize('assistantView.deleteDocumentButton', "Delete"),
+							});
+							if (!commandIsCurrent()) { return false; }
+							if (answer.confirmed) {
+								for (const [thread, active] of activeArtifacts) {
+									if (active.documentId === pick.document.id) { activeArtifacts.delete(thread); }
+								}
+								setFeedback(store.removeDocument(owner, pick.document.id)
+									? localize('assistantView.documentDeleted', "Document deleted.")
+									: localize('assistantView.documentMissing', "This document is no longer available."));
+							}
+						}
+					}
+				}
+				setInput('');
+				return true;
+			}
 			if (input === '/memory') {
-				const memory = store.read(accountId).instructions;
-				setFeedback(memory ? localize('assistantView.memory', "Memory: {0}", memory.slice(0, 300)) : localize('assistantView.noMemory', "No memory saved yet. Ask the assistant to remember something."));
+				const bank = store.readMemoryBank(accountId);
+				const userTag = localize('assistantView.memoryUserTag', "user profile");
+				const notesTag = localize('assistantView.memoryNotesTag', "agent notes");
+				const addLabel = localize('assistantView.memoryAdd', "Add a memory…");
+				const pick = await this.quickInput.pick([
+					{ label: addLabel, target: undefined },
+					...memoryEntries(bank.user).map(entry => ({ label: entry, description: userTag, target: 'user' as const })),
+					...memoryEntries(bank.memory).map(entry => ({ label: entry, description: notesTag, target: 'memory' as const })),
+				], {
+					title: localize('assistantView.memoryTitle', "Assistant memory ({0})", memoryUsage(bank)),
+					placeHolder: localize('assistantView.memoryPlaceHolder', "Select a memory to edit or remove, or add a new one"),
+				});
+				if (!commandIsCurrent()) { return false; }
+				if (pick) {
+					if (pick.target === undefined) {
+						const target = await this.quickInput.pick([
+							{ label: userTag, description: localize('assistantView.memoryUserHint', "Who the user is: name, role, preferences"), target: 'user' as const },
+							{ label: notesTag, description: localize('assistantView.memoryNotesHint', "Your notes: environment, conventions, lessons"), target: 'memory' as const },
+						], { title: localize('assistantView.memoryTarget', "Save to which memory?") });
+						if (!commandIsCurrent()) { return false; }
+						if (target) {
+							const content = await this.quickInput.input({
+								title: localize('assistantView.memoryNew', "New memory"),
+								prompt: localize('assistantView.memoryNewPrompt', "One durable fact, written as a statement."),
+							});
+							if (!commandIsCurrent()) { return false; }
+							if (content?.trim()) {
+								const result = store.applyMemory(accountId, target.target, [{ action: 'add', content: content.trim() }]);
+								setFeedback(result.ok ? localize('assistantView.memorySaved', "Memory saved. {0}", result.usage) : result.error);
+							}
+						}
+					} else {
+						const target = pick.target;
+						const action = await this.quickInput.pick([
+							{ label: localize('assistantView.memoryEdit', "Edit…"), edit: true },
+							{ label: localize('assistantView.memoryRemove', "Remove"), edit: false },
+						], { title: pick.label });
+						if (!commandIsCurrent()) { return false; }
+						if (action?.edit) {
+							const content = await this.quickInput.input({
+								title: localize('assistantView.memoryEditTitle', "Edit memory"),
+								value: pick.label,
+								prompt: localize('assistantView.memoryNewPrompt', "One durable fact, written as a statement."),
+							});
+							if (!commandIsCurrent()) { return false; }
+							if (content !== undefined) {
+								const result = store.applyMemory(accountId, target, [{ action: 'patch', old_text: pick.label, content, exact: true }]);
+								setFeedback(result.ok ? localize('assistantView.memorySaved', "Memory saved. {0}", result.usage) : result.error);
+							}
+						} else if (action) {
+							const result = store.applyMemory(accountId, target, [{ action: 'remove', old_text: pick.label, exact: true }]);
+							setFeedback(result.ok ? localize('assistantView.memoryRemoved', "Memory removed. {0}", result.usage) : result.error);
+						}
+					}
+				}
 				setInput('');
 				return true;
 			}
 			if (input === '/forget') {
-				const memory = store.read(accountId).instructions;
-				const lines = memory.split('\n').filter(line => line.trim());
-				if (!lines.length) {
+				const bank = store.readMemoryBank(accountId);
+				const userEntries = memoryEntries(bank.user);
+				const noteEntries = memoryEntries(bank.memory);
+				const total = userEntries.length + noteEntries.length;
+				if (!total) {
 					setFeedback(localize('assistantView.noMemory', "No memory saved yet. Ask the assistant to remember something."));
 				} else {
-					const picks = await this.quickInput.pick(lines.map(line => ({ label: line.replace(/^-\s*/, ''), picked: true })), {
+					const userTag = localize('assistantView.memoryUserTag', "user profile");
+					const notesTag = localize('assistantView.memoryNotesTag', "agent notes");
+					const picks = await this.quickInput.pick([
+						...userEntries.map(entry => ({ label: entry, description: userTag, picked: true })),
+						...noteEntries.map(entry => ({ label: entry, description: notesTag, picked: true })),
+					], {
 						canPickMany: true,
 						title: localize('assistantView.forgetTitle', "Assistant memory"),
 						placeHolder: localize('assistantView.forgetPlaceHolder', "Uncheck memories to forget, then confirm"),
 					});
+					if (!commandIsCurrent()) { return false; }
 					if (picks) {
-						store.setInstructions(accountId, picks.map(pick => `- ${pick.label}`).join('\n'));
-						setFeedback(picks.length === lines.length
+						const keptUser = new Set(picks.filter(pick => pick.description === userTag).map(pick => pick.label));
+						const keptNotes = new Set(picks.filter(pick => pick.description === notesTag).map(pick => pick.label));
+						const forgot = store.forgetMemoryEntries(owner, {
+							user: userEntries.filter(entry => !keptUser.has(entry)),
+							memory: noteEntries.filter(entry => !keptNotes.has(entry)),
+						});
+						setFeedback(forgot === 0
 							? localize('assistantView.memoryKept', "Memory unchanged.")
-							: localize('assistantView.memoryForgot', "Forgot {0} memor{1}.", lines.length - picks.length, lines.length - picks.length === 1 ? 'y' : 'ies'));
+							: localize('assistantView.memoryForgot', "Forgot {0} memor{1}.", forgot, forgot === 1 ? 'y' : 'ies'));
 					}
+				}
+				setInput('');
+				return true;
+			}
+			if (input === '/watch' || input.startsWith('/watch ')) {
+				const watcher = this.instantiation.invokeFunction(accessor => accessor.get(IAssistantMailWatcher));
+				const arg = input.slice('/watch'.length).trim();
+				if (arg === 'on' || arg === 'off') {
+					await watcher.setEnabled(arg === 'on');
+					setFeedback(arg === 'on'
+						? localize('assistantView.watchOn', "Important-mail watch enabled. Connected mailboxes are checked quietly while Agents is open.")
+						: localize('assistantView.watchOff', "Important-mail watch disabled."));
+				} else if (arg === 'check') {
+					const found = await watcher.checkNow(accountId);
+					setFeedback(found
+						? localize('assistantView.watchFound', "Reported {0} new important email(s).", found)
+						: localize('assistantView.watchNone', "No new important emails in the connected mailboxes."));
+				} else {
+					const status = watcher.status(accountId);
+					watcher.markSeen(accountId);
+					const connections = status.connections.map(connection => `${connection.label}: ${connection.connected
+						? localize('assistantView.watchConnected', "connected")
+						: localize('assistantView.watchSkipped', "not connected — skipped")}`).join('; ');
+					setFeedback(localize('assistantView.watchStatus', "Important-mail watch is {0}. {1}.{2}",
+						status.enabled ? localize('assistantView.watchOnWord', "on") : localize('assistantView.watchOffWord', "off"),
+						connections || localize('assistantView.watchNoConnections', "no mail connections"),
+						status.alerts.length ? ` ${localize('assistantView.watchAlerts', "{0} recent alert(s) — ask me about them.", status.alerts.length)}` : ''));
 				}
 				setInput('');
 				return true;
@@ -880,9 +1586,9 @@ class AssistantView extends AbstractCustomView {
 				return true;
 			}
 			if (input === '/clear') {
-				store.clearTurns(accountId, taskId);
-				setFeedback(localize('assistantView.cleared', "Conversation cleared."));
 				setInput('');
+				this.saveDraft?.();
+				await clearChat();
 				return true;
 			}
 			if (input === '/stop') {
@@ -931,6 +1637,64 @@ class AssistantView extends AbstractCustomView {
 				this.runs.openAppSetup(app ? app.id : undefined);
 				return true;
 			}
+			if (/^\/send-email(?:\s|$)/i.test(input)) {
+				if (submittingEmail) { return true; }
+				submittingEmail = true;
+				const owner = accountId;
+				const thread = taskId;
+				const current = () => accountId === owner && taskId === thread && !this._store.isDisposed
+					&& this.composer?.getInputValue().trim() === input;
+				try {
+					const availableMailboxes = () => this.directMail.connections.get().filter(mail => mail.canSend && !mail.needsSignIn);
+					let mailboxes = availableMailboxes();
+					if (!mailboxes.length) {
+						const choice = await this.quickInput.pick([
+							{ label: signalCDirectMailConnections.gmail.name, provider: 'gmail' as const },
+							{ label: signalCDirectMailConnections.outlook.name, provider: 'outlook' as const },
+						], { title: localize('assistantView.sendEmailConnect', "Choose a mailbox and sign in to read and send") });
+						if (!choice || !current()) { return true; }
+						await this.directMail.manage(choice.provider);
+						if (!current()) { return true; }
+						mailboxes = availableMailboxes();
+						if (!mailboxes.length) {
+							setFeedback(localize('assistantView.sendEmailAfterConnect', "Choose Sign In to Read and Send and grant mailing permission in the browser."));
+							return true;
+						}
+					}
+					const [header, ...lines] = input.slice('/send-email'.length).trim().split(/\r?\n/);
+					const separator = header.indexOf('|');
+					const to = separator < 0 ? '' : header.slice(0, separator).trim();
+					const subject = separator < 0 ? '' : header.slice(separator + 1).trim();
+					const body = lines.join('\n').trim();
+					if (!isSignalCMailAddress(to) || !subject || !body) {
+						setFeedback(localize('assistantView.sendEmailFormat', "Enter /send-email address | subject, then press Shift+Enter and write the message."));
+						return true;
+					}
+					const mailbox = mailboxes.length === 1 ? mailboxes[0] : (await this.quickInput.pick(
+						mailboxes.map(mail => ({ label: mail.label, mail })), { title: localize('assistantView.sendEmailSender', "Choose the sending mailbox") }))?.mail;
+					if (!mailbox || !current()) { return true; }
+					const confirmation = await this.dialogs.confirm({
+						type: 'info',
+						message: localize('assistantView.sendEmailConfirm', "Send this email to {0}?", to),
+						detail: localize('assistantView.sendEmailDetails', "From {0}\nSubject: {1}\n\n{2}", mailbox.label, subject, body),
+						primaryButton: localize('assistantView.sendEmailButton', "Send email"),
+					});
+					if (!confirmation.confirmed || !current()) { return true; }
+					setFeedback(localize('assistantView.sendingEmail', "Sending email…"));
+					const result = await this.directMail.send(mailbox, { to, subject, body }, CancellationToken.None);
+					if (current()) {
+						setInput('');
+						setFeedback(result);
+					}
+				} catch (error) {
+					if (current()) { setFeedback(error instanceof Error ? error.message : localize('assistantView.sendEmailFailed', "Could not confirm email submission. Check Sent before retrying.")); }
+				} finally {
+					submittingEmail = false;
+				}
+				return true;
+			}
+			const skillCommand = /^\/skill(?:\s+(\S+))?(?:\s+([\s\S]+))?$/i.exec(input);
+			if (skillCommand) { return attachSkill(skillCommand[1], skillCommand[2]); }
 			if (input === '/prompts') {
 				await browsePrompts();
 				return true;
@@ -968,7 +1732,7 @@ class AssistantView extends AbstractCustomView {
 			}
 			if (input === '/context') {
 				const stats = this.runs.describeContext(accountId, taskId);
-				setFeedback(localize('assistantView.contextInfo', "Next reply sees {0} of {1} turn(s), about {2} of {3} characters. Older turns drop out — /compact consolidates them.", stats.kept, stats.total, stats.chars.toLocaleString(), stats.limit.toLocaleString()));
+				setFeedback(localize('assistantView.searchableContextInfo', "The next reply includes {0} of {1} turns, about {2} of {3} characters. Ask about a date or phrase to search earlier turns.", stats.kept, stats.total, stats.chars.toLocaleString(), stats.limit.toLocaleString()));
 				setInput('');
 				return true;
 			}
@@ -998,29 +1762,39 @@ class AssistantView extends AbstractCustomView {
 					void runRoutine(accountId, routineId);
 					return true;
 				}
-				const last = store.popTurn(accountId, taskId);
+				const turns = store.read(accountId, taskId).turns;
+				const last = turns.at(-1);
+				if (this.runs.getPending(accountId, taskId)) {
+					setFeedback(localize('assistantView.waitForReply', "Wait for the current reply first."));
+					return true;
+				}
 				setFeedback(last ? '' : localize('assistantView.nothingToRegenerate', "Nothing to regenerate yet."));
 				setInput('');
-				if (last) { void this.runs.send(accountId, last.prompt, taskId); }
+				if (last) { void this.runs.send(accountId, last.prompt, taskId, { requestStart: last.requestStart, replaceFrom: turns.length - 1, preserveDraft: true }); }
 				return true;
 			}
 			if (input === '/compact') {
-				const count = store.read(accountId, taskId).turns.length;
-				if (count < 2) {
+				const owner = accountId;
+				const thread = taskId;
+				const { turns } = store.read(owner, thread);
+				if (turns.length < 2 || turns.at(-1)?.compacted) {
 					setFeedback(localize('assistantView.nothingToCompact', "Nothing to compact yet."));
-				} else {
 					setInput('');
-					const done = await this.runs.send(accountId, localize('assistantView.compactPrompt', "Summarize this conversation so far — key facts, decisions made, file paths touched and open questions — compactly, for future reference."), taskId);
-					const summary = done ? store.read(accountId, taskId).turns.at(-1)?.reply : undefined;
-					if (summary) {
-						store.clearTurns(accountId, taskId);
-						store.appendTurn(accountId, { prompt: localize('assistantView.compactLabel', "Summarize the conversation"), reply: summary }, taskId);
-						setFeedback(localize('assistantView.compacted', "Compacted {0} turns into a summary.", count));
-					} else if (!done) {
-						setFeedback(localize('assistantView.compactBusy', "Wait for the current reply first."));
-					}
+					return true;
 				}
+				if (this.runs.getPending(owner, thread)) {
+					setFeedback(localize('assistantView.compactBusy', "Wait for the current reply first."));
+					return false;
+				}
+				const label = localize('assistantView.compactLabel', "Summarize the conversation");
+				const stats = this.runs.describeContext(owner, thread, label.length);
 				setInput('');
+				this.saveDraft?.();
+				const done = await this.runs.send(owner, label, thread, { compact: true, preserveDraft: true });
+				if (!this._store.isDisposed && accountId === owner && taskId === thread) {
+					setFeedback(done ? localize('assistantView.compactRetained', "Saved a summary using {0} of {1} turns as initial context. All exchanges are available in search and export.", stats.kept, stats.total)
+						: localize('assistantView.compactFailed', "The summary could not be saved. Your exchanges are still available."));
+				}
 				return true;
 			}
 			if (input === '/export') {
@@ -1095,14 +1869,44 @@ class AssistantView extends AbstractCustomView {
 			}
 			const submittedDraft = this.composer?.getDraft();
 			if (!submittedDraft) { return false; }
+			const taskDraft = !taskId ? getAssistantLinkedTaskDraft(submittedDraft) : undefined;
+			let typedRequest = taskDraft?.inputText ?? input;
+			input = typedRequest;
+			let routineServerIds: readonly string[] | undefined;
+			if (/(^|[\s([{])@/.test(typedRequest)) {
+				const scheduler = this.instantiation.invokeFunction(accessor => accessor.get(IAssistantBriefingScheduler));
+				const routines = await scheduler.getRoutines(accountId).catch(() => []);
+				if (!commandIsCurrent()) { return false; }
+				const mention = assistantRoutineMention(typedRequest, routines);
+				if (mention) {
+					const before = typedRequest.slice(0, mention.start).trimEnd();
+					const after = typedRequest.slice(mention.end).trimStart();
+					typedRequest = [before, after].filter(Boolean).join(' ') || localize('assistantView.routineMentionDefault', "Run this routine now.");
+					input = assistantTextAttachment(localize('assistantView.routineAttachment', "Routine · {0}", mention.routine.name), mention.routine.prompt) + typedRequest;
+					routineServerIds = mention.routine.serverIds;
+				}
+			}
+			const imageUrls: string[] = [];
 			if (submittedDraft.attachments.length) {
 				const revision = draftRevision;
+				const target = this.agentChats.target;
 				const folders = await attachmentFolders();
 				if (!folders || revision !== draftRevision) { return false; }
 				const blocks: string[] = [];
 				const skipped: string[] = [];
+				let imageBytes = 0;
 				for (const attachment of submittedDraft.attachments) {
 					const name = attachment.fullName ?? attachment.name;
+					if (isImageVariableEntry(attachment)) {
+						const image = assistantImageAttachmentDataUrl(attachment);
+						if (image && imageUrls.length < ASSISTANT_IMAGE_ATTACHMENT_LIMIT && imageBytes + image.bytes <= ASSISTANT_IMAGE_ATTACHMENT_BYTES_LIMIT) {
+							imageUrls.push(image.url);
+							imageBytes += image.bytes;
+						} else {
+							skipped.push(name);
+						}
+						continue;
+					}
 					if (URI.isUri(attachment.value)) {
 						const label = formatAssistantWorkspacePath(folders, attachment.value);
 						if (label === undefined) {
@@ -1119,56 +1923,72 @@ class AssistantView extends AbstractCustomView {
 						}
 					} else if (typeof attachment.value === 'string') {
 						const content = attachment.value.length > 12_000 ? `${attachment.value.slice(0, 12_000)}\n…(truncated)` : attachment.value;
-						blocks.push(`<attachment name="${name.replace(/"/g, '')}">\n${content}\n</attachment>\n\n`);
+						blocks.push(assistantTextAttachment(name, content));
 					} else {
 						skipped.push(name);
 						continue;
 					}
 					if (this._store.isDisposed || revision !== draftRevision) { return false; }
 				}
-				if (this._store.isDisposed || revision !== draftRevision) { return false; }
-				if (!blocks.length) {
-					setFeedback(localize('assistantView.textOnly', "Attachments couldn't be read as text — paste the content you want to share."));
+				if (this._store.isDisposed || revision !== draftRevision || this.agentChats.target !== target) { return false; }
+				if (!blocks.length && !imageUrls.length) {
+					setFeedback(localize('assistantView.textOnly', "Attachments couldn't be read as text or supported images — paste the content you want to share."));
 					return false;
 				}
 				input = blocks.join('') + input;
 				if (skipped.length) {
-					setFeedback(localize('assistantView.attachmentsSkipped', "Attached {0} item(s) as text; skipped {1}: only text content can be sent.", String(blocks.length), skipped.join(', ')));
-				} else {
+					setFeedback(localize('assistantView.attachmentsSkipped', "Attached {0} item(s); skipped {1}: only text content and supported images can be sent.", String(blocks.length + imageUrls.length), skipped.join(', ')));
+				} else if (blocks.length) {
 					setFeedback(localize('assistantView.attachmentsInlined', "Attached {0} item(s) as text.", blocks.length));
+				} else {
+					setFeedback(localize('assistantView.imagesAttached', "Attached {0} image(s).", imageUrls.length));
 				}
+			}
+			const activeArtifact = activeArtifacts.get(artifactThreadKey(accountId, taskId));
+			const activeDocument = activeArtifact && store.readDocument(accountId, activeArtifact.documentId);
+			if (activeArtifact && activeDocument) {
+				const selection = assistantVisibleDocumentSelection(this.editorService.visibleTextEditorControls, activeArtifact.resource);
+				if (selection) {
+					input = assistantPromptWithSelectionContext(input, activeDocument.title, selection);
+				}
+				input = assistantPromptWithDocumentContext(input, activeDocument.title, activeDocument.content);
 			}
 			if (input.length > REACH_ASSISTANT_PROMPT_LIMIT) {
 				setFeedback(localize('assistantView.messageTooLong', "Assistant messages can be up to {0} characters.", REACH_ASSISTANT_PROMPT_LIMIT));
 				return false;
 			}
-			if (editingFrom && editingFrom.accountId === accountId && editingFrom.taskId === taskId) {
-				store.truncateTurns(accountId, editingFrom.index, taskId);
+			const editing = !taskDraft && editingFrom?.accountId === accountId && editingFrom.taskId === taskId ? editingFrom : undefined;
+			if (editing && this.runs.getPending(accountId, taskId)) {
+				setFeedback(localize('assistantView.waitForEdit', "Wait for the current reply before replacing an earlier prompt."));
+				return false;
+			}
+			if (editing && !equals(editing.original, store.read(accountId, taskId).turns)) {
+				setEditingFrom(undefined);
+				setFeedback(localize('assistantView.editHistoryChanged', "This conversation changed. Your draft is here. Select the prompt you want to replace, or send this as a new message."));
+				return false;
 			}
 			setEditingFrom(undefined);
+			const requestStart = input.length > typedRequest.length ? input.length - typedRequest.length : undefined;
+			if (taskDraft) {
+				saveDraft.cancel();
+				setComposerDraft();
+				const linkedTask = createTask(accountId);
+				openThread(linkedTask);
+				store.setComposerDraft(accountId, taskDraft, linkedTask, input);
+				void this.runs.send(accountId, input, linkedTask, { requestStart, imageUrls, serverIds: routineServerIds });
+				return true;
+			}
 			if (this.runs.getPending(accountId, taskId)) {
-				if (!this.runs.queuePrompt(accountId, input, taskId)) { return false; }
+				if (!this.runs.queuePrompt(accountId, input, taskId, requestStart, imageUrls, routineServerIds)) { return false; }
 				saveDraft.cancel();
 				setComposerDraft();
 				this.saveDraft?.();
 				return true;
 			}
 			saveDraft.cancel();
-			if (!taskId && input.startsWith('/task ')) {
-				const taskPrompt = input.slice('/task '.length).trim();
-				if (!taskPrompt) { return false; }
-				setInput('');
-				store.setDraft(accountId, '');
-				openThread(createTask(accountId));
-				setInput(taskPrompt);
-				this.saveDraft?.();
-				setInput('');
-				void this.runs.send(accountId, taskPrompt, taskId);
-				return true;
-			}
 			store.setComposerDraft(accountId, submittedDraft, taskId, submittedDraft.attachments.length ? input : undefined);
 			setComposerDraft();
-			void this.runs.send(accountId, input, taskId);
+			void this.runs.send(accountId, input, taskId, { replaceFrom: editing?.index, requestStart, imageUrls, serverIds: routineServerIds });
 			return true;
 		};
 		const addQuote = (reply: string) => {
@@ -1341,8 +2161,10 @@ class AssistantView extends AbstractCustomView {
 					suggestionListeners.add(addDisposableListener(button, EventType.CLICK, () => {
 						if (!accountId || this.runs.getPending(accountId, taskId)) { return; }
 						if (chip.run) { chip.run(); return; }
-						setInput(chip.prompt ?? '');
-						void submit();
+						if (chip.prompt) {
+							this.saveDraft?.();
+							void this.runs.send(accountId, chip.prompt, taskId, { preserveDraft: true });
+						}
 					}));
 				}
 			};
@@ -1375,6 +2197,22 @@ class AssistantView extends AbstractCustomView {
 				followups.hidden = chips.length === 0;
 				return;
 			}
+			const hour = new Date().getHours();
+			const daypart = hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening';
+			const greetingName = assistantGreetingName(store.readMemoryBank(accountId).user);
+			welcomeTitle.textContent = daypart === 'morning'
+				? greetingName ? localize('assistantView.greetingMorningNamed', "Good morning, {0}. What should we tackle?", greetingName) : localize('assistantView.greetingMorning', "Good morning. What should we tackle?")
+				: daypart === 'afternoon'
+					? greetingName ? localize('assistantView.greetingAfternoonNamed', "Good afternoon, {0}. What should we tackle?", greetingName) : localize('assistantView.greetingAfternoon', "Good afternoon. What should we tackle?")
+					: greetingName ? localize('assistantView.greetingEveningNamed', "Good evening, {0}. What should we tackle?", greetingName) : localize('assistantView.greetingEvening', "Good evening. What should we tackle?");
+			const runningTasks = store.read(accountId).tasks?.filter(task => task.status === 'running').length ?? 0;
+			const mailAlerts = store.read(accountId).mailAlerts?.length ?? 0;
+			const attention = [
+				runningTasks ? localize('assistantView.greetingTasks', "{0} linked task(s) running", runningTasks) : '',
+				mailAlerts ? localize('assistantView.greetingMail', "{0} important email alert(s)", mailAlerts) : '',
+			].filter(Boolean).join(' · ');
+			welcomeDetail.textContent = attention || (memoryEntries(store.readMemoryBank(accountId).user).length ? localize('assistantView.greetingMemory', "I’ll keep your saved preferences in mind.") : '');
+			welcomeDetail.hidden = !welcomeDetail.textContent;
 			const enabledServers = this.mcpService.servers.get()
 				.filter(server => isContributionEnabled(server.enablement.get()));
 			const serverNames = enabledServers
@@ -1388,6 +2226,9 @@ class AssistantView extends AbstractCustomView {
 			if (/mail|inbox/.test(serverNames) || this.directMail.connections.get().some(mail => !mail.needsSignIn)) { chips.push({ label: localize('assistantView.suggestEmail', "Summarize my recent emails"), prompt: localize('assistantView.suggestEmailPrompt', "Summarize my 5 most recent emails, with senders and subjects.") }); }
 			if (/calendar/.test(serverNames)) { chips.push({ label: localize('assistantView.suggestCalendar', "What's on my calendar today?"), prompt: localize('assistantView.suggestCalendarPrompt', "What's on my calendar today? List the events with times.") }); }
 			if (/slack|teams|chat|message/.test(serverNames)) { chips.push({ label: localize('assistantView.suggestMessages', "Catch me up on unread messages"), prompt: localize('assistantView.suggestMessagesPrompt', "Catch me up on my unread messages.") }); }
+			if (this.configuration.getValue<boolean>(PromptsConfig.USE_AGENT_SKILLS)) {
+				chips.splice(2, 0, { label: localize('assistantView.suggestSkill', "Use a skill…"), run: () => void attachSkill(undefined, this.composer?.getInputValue() ?? '') });
+			}
 			chips.push({ label: localize('assistantView.suggestTools', "What can you do?"), prompt: localize('assistantView.suggestToolsPrompt', "List the tools you can use and what they can do.") });
 			wire(suggestions, chips);
 		};
@@ -1402,7 +2243,7 @@ class AssistantView extends AbstractCustomView {
 				case McpConnectionState.Kind.Error: return { css: 'error', text: localize('assistantView.appError', "Connection error"), detail: state.message };
 				default: return McpConnectionState.needsSignIn(state)
 					? { css: 'attention', text: McpConnectionState.toString(state) }
-					: { css: 'stopped', text: localize('assistantView.appDisconnected', "Disconnected") };
+					: { css: 'stopped', text: localize('assistantView.appOnDemand', "On-demand") };
 			}
 		};
 		const PINNED_SERVERS_KEY = 'sessions.assistant.pinnedServers';
@@ -1422,12 +2263,13 @@ class AssistantView extends AbstractCustomView {
 			const rank = (dot: { css: string }) => ({ running: 0, starting: 1, attention: 2, error: 3, stopped: 4, disabled: 5 } as const)[dot.css] ?? 6;
 			for (const mail of this.directMail.connections.get()) {
 				const css = mail.needsSignIn ? 'attention' : 'running';
-				const status = mail.needsSignIn ? localize('assistantView.directMailSignIn', "Sign-in required") : localize('assistantView.directMailReadOnly', "Read-only");
+				const status = mail.needsSignIn ? localize('assistantView.directMailSignIn', "Sign-in required")
+					: mail.canSend ? localize('assistantView.directMailReadSend', "Read and send") : localize('assistantView.directMailReadOnly', "Read-only");
 				const label = localize('assistantView.appAria', "{0} app, {1}. Manage connection.", mail.label, status);
 				const tile = append(apps, $('button.reach-assistant-app.reach-assistant-app-' + css, { type: 'button', title: label, 'aria-label': label }));
 				append(tile, $('span' + ThemeIcon.asCSSSelector(Codicon.mail), { 'aria-hidden': 'true' }));
 				append(tile, $('span.reach-assistant-app-name', {}, mail.label));
-				if (mail.needsSignIn) { append(tile, $('span.reach-assistant-app-count', {}, status)); }
+				append(tile, $('span.reach-assistant-app-count', {}, status));
 				append(tile, $('span.reach-assistant-app-dot.' + css, { 'aria-hidden': 'true' }));
 				connectionListeners.add(addDisposableListener(tile, EventType.CLICK, () => this.runs.openAppSetup(signalCDirectMailConnections[mail.provider].id)));
 			}
@@ -1444,10 +2286,12 @@ class AssistantView extends AbstractCustomView {
 				const tooltipParts = [`${name} — ${stateText}`];
 				if (tools) { tooltipParts.push(localize('assistantView.appTooltipTools', "{0} tools: {1}{2}", tools, toolNames, tools > 4 ? '…' : '')); }
 				if (prompts) { tooltipParts.push(localize('assistantView.appTooltipPrompts', "{0} prompts", prompts)); }
+				const signIn = dot.css === 'attention';
+				const options = () => this.commands.executeCommand(McpCommandIds.ServerOptions, server.definition.id, { collectionId: server.collection.id });
 				const tile = append(apps, $('button.reach-assistant-app.reach-assistant-app-' + dot.css, {
 					type: 'button',
-					title: localize('assistantView.appTooltip', "{0}. Click to manage.", tooltipParts.join(', ')),
-					'aria-label': localize('assistantView.appAria', "{0} app, {1}. Manage connection.", name, stateText),
+					title: signIn ? localize('assistantView.appSignInTooltip', "{0}. Click to sign in.", tooltipParts.join(', ')) : localize('assistantView.appTooltip', "{0}. Click to manage.", tooltipParts.join(', ')),
+					'aria-label': signIn ? localize('assistantView.appSignInAria', "Sign in to {0}", name) : localize('assistantView.appAria', "{0} app, {1}. Manage connection.", name, stateText),
 				}));
 				const iconUrl = server.serverMetadata.get()?.icons?.getUrl(16)?.dark;
 				if (iconUrl && (iconUrl.scheme === 'data' || iconUrl.scheme === 'https')) {
@@ -1463,25 +2307,36 @@ class AssistantView extends AbstractCustomView {
 					append(tile, $('span.reach-assistant-app-count', {}, String(tools)));
 				}
 				append(tile, $('span.reach-assistant-app-dot.' + dot.css, { 'aria-hidden': 'true' }));
-				connectionListeners.add(addDisposableListener(tile, EventType.CLICK,
-					() => void this.commands.executeCommand(McpCommandIds.ServerOptions, server.definition.id)));
+				connectionListeners.add(addDisposableListener(tile, EventType.CLICK, () => {
+					if (McpConnectionState.needsSignIn(server.connectionState.get()) && isContributionEnabled(server.enablement.get())) {
+						void server.start({ promptType: 'all-untrusted' });
+					} else {
+						void options();
+					}
+				}));
 				connectionListeners.add(addDisposableListener(tile, EventType.CONTEXT_MENU, event => {
 					EventHelper.stop(event, true);
 					const state = server.connectionState.get();
 					const running = McpConnectionState.isRunning(state);
 					const needsSignIn = McpConnectionState.needsSignIn(state);
+					const enabled = isContributionEnabled(server.enablement.get());
 					this.contextMenu.showContextMenu({
 						getAnchor: () => tile,
 						getActions: () => [
 							new Action('assistant.app.options', localize('assistantView.appOptions', "Options…"), undefined, true,
-								() => this.commands.executeCommand(McpCommandIds.ServerOptions, server.definition.id)),
+								options),
 							running
 								? new Action('assistant.app.stop', localize('assistantView.appStop', "Stop"), undefined, true,
 									() => this.commands.executeCommand(McpCommandIds.StopServer, server.definition.id))
-								: new Action('assistant.app.start', needsSignIn ? localize('assistantView.appSignIn', "Sign In…") : localize('assistantView.appStart', "Start"), undefined, true,
-									() => this.commands.executeCommand(McpCommandIds.StartServer, server.definition.id)),
+								: new Action('assistant.app.start', needsSignIn ? localize('assistantView.appSignIn', "Sign In…") : localize('assistantView.appStart', "Start"), undefined, enabled,
+									() => server.start({ promptType: 'all-untrusted' })),
 							new Action('assistant.app.restart', localize('assistantView.appRestart', "Restart"), undefined, running,
 								() => this.commands.executeCommand(McpCommandIds.RestartServer, server.definition.id)),
+							new Action('assistant.app.toggleEnabled', enabled ? localize('assistantView.appDisable', "Disable") : localize('assistantView.appEnable', "Enable"), undefined, true,
+								async () => {
+									this.mcpService.enablementModel.setEnabled(server.definition.id, enabled ? ContributionEnablementState.DisabledProfile : ContributionEnablementState.EnabledProfile);
+									if (enabled) { await server.stop(); }
+								}),
 							new Separator(),
 							new Action('assistant.app.output', localize('assistantView.appOutput', "Show Output"), undefined, true,
 								() => server.showOutput()),
@@ -1515,7 +2370,7 @@ class AssistantView extends AbstractCustomView {
 							new Action('assistant.app.pin', pinned.has(server.definition.id) ? localize('assistantView.appUnpin', "Unpin app") : localize('assistantView.appPin', "Pin app"), undefined, true,
 								() => setPinned(server.definition.id, !pinned.has(server.definition.id))),
 							new Action('assistant.app.connectMore', localize('assistantView.connectApp', "Connect app"), undefined, true,
-							() => this.runs.openAppSetup()),
+								() => this.runs.openAppSetup()),
 						],
 					});
 				}));
@@ -1539,15 +2394,59 @@ class AssistantView extends AbstractCustomView {
 				}
 			},
 		});
+		const artifactEditorListeners = new Map<string, DisposableStore>();
+		const artifactEditorDisposeWatcher = this._store.add(new MutableDisposable());
+		const artifactThreadKey = (owner: string, thread: string | undefined) => `${owner}
+${thread ?? ''}`;
+		const activeArtifacts = new Map<string, { readonly documentId: string; readonly resource: string }>();
+		const openReplyDocument = async (reply: string, artifact?: { readonly accountId: string; readonly documentId: string }) => {
+			const untitledResource = artifact && URI.from({ scheme: Schemas.untitled, path: `/Assistant Document-${artifact.documentId}.md` });
+			const documentModel = this.untitledTextEditors.create({
+				initialValue: reply, languageId: 'markdown',
+				...(untitledResource ? { untitledResource } : {}),
+			});
+			if (artifact) {
+				artifactEditorDisposeWatcher.value ??= this.untitledTextEditors.onWillDispose(model => {
+					const key = model.resource.toString();
+					artifactEditorListeners.get(key)?.dispose();
+					artifactEditorListeners.delete(key);
+					for (const [thread, active] of activeArtifacts) {
+						if (active.resource === key) { activeArtifacts.delete(thread); }
+					}
+				});
+				const key = documentModel.resource.toString();
+				if (!artifactEditorListeners.has(key)) {
+					const listeners = new DisposableStore();
+					const sync = listeners.add(new RunOnceScheduler(() => {
+						const value = this.untitledTextEditors.getValue(documentModel.resource);
+						const current = store.readDocument(artifact.accountId, artifact.documentId);
+						if (value !== undefined && current && value !== current.content) {
+							store.saveDocument(artifact.accountId, current.title, value, artifact.documentId);
+						}
+					}, 500));
+					listeners.add(documentModel.onDidChangeContent(() => sync.schedule()));
+					artifactEditorListeners.set(key, listeners);
+				}
+				if (accountId) {
+					activeArtifacts.set(artifactThreadKey(accountId, taskId), { documentId: artifact.documentId, resource: key });
+				}
+			}
+			const input = this.instantiation.createInstance(UntitledTextEditorInput, documentModel);
+			await this.editorService.openEditor(input, { pinned: true }, artifact ? SIDE_GROUP : undefined);
+		};
 		const renderTurns = () => {
 			if (!accountId) { return; }
 			const owner = accountId;
 			const thread = taskId;
 			const turns = store.read(owner, thread).turns;
-			if (turns.length === turnCount) { return; }
+			const last = turns.at(-1);
+			if (turns.length === turnCount && equals(last, lastRenderedTurn)) { return; }
+			lastRenderedTurn = last;
 			renderedTurns.clear();
 			clearNode(transcript);
-			for (const [turnIndex, turn] of turns.entries()) {
+			const first = searchQuery ? 0 : Math.max(0, assistantSummaryIndex(turns));
+			for (let turnIndex = first; turnIndex < turns.length; turnIndex++) {
+				const turn = turns[turnIndex];
 				const item = append(transcript, $('article'));
 				if (turn.routineRunId) { item.dataset.routineRunId = turn.routineRunId; }
 				item.hidden = !!searchQuery && !turn.prompt.toLowerCase().includes(searchQuery) && !turn.reply.toLowerCase().includes(searchQuery);
@@ -1564,12 +2463,55 @@ class AssistantView extends AbstractCustomView {
 						append(el, $('span', {}, attachment.label.split(/[\\/]/).pop() ?? attachment.label));
 					}
 				}
+				if (turn.imageUrls?.length) {
+					const row = append(item, $('.reach-assistant-images'));
+					row.setAttribute('role', 'list');
+					row.setAttribute('aria-label', localize('assistantView.attachedImages', "Attached images"));
+					turn.imageUrls.forEach((url, index) => {
+						const image = document.createElement('img');
+						image.className = 'reach-assistant-image';
+						image.src = url;
+						image.alt = localize('assistantView.attachedImage', "Attached image {0}", index + 1);
+						image.loading = 'lazy';
+						row.appendChild(image);
+					});
+				}
 				if (messageText) {
 					append(item, $('p.reach-assistant-message', {}, messageText)).setAttribute('aria-label', localize('assistantView.userMessage', "Your message"));
 				}
 				const reply = renderedTurns.add(renderAssistantMarkdown(turn.reply));
 				reply.element.classList.add('reach-assistant-reply');
 				append(item, reply.element);
+				const libraryDocumentIds = [...new Set((turn.activity ?? []).map(activity => activity.documentId).filter((id): id is string => typeof id === 'string'))];
+				for (const documentId of libraryDocumentIds) {
+					const artifact = store.readDocument(owner, documentId);
+					if (!artifact) { continue; }
+					const documentButton = append(item, $('button.reach-assistant-document', {
+						type: 'button',
+						title: localize('assistantView.openSavedDocumentTip', "Open the saved Markdown document"),
+					}));
+					append(documentButton, $('span' + ThemeIcon.asCSSSelector(Codicon.file), { 'aria-hidden': 'true' }));
+					const documentText = append(documentButton, $('span.reach-assistant-document-text'));
+					append(documentText, $('span.reach-assistant-document-title', {}, artifact.title));
+					append(documentText, $('span.reach-assistant-document-meta', {}, localize('assistantView.savedDocumentMeta', "Saved document · {0} words · Open", artifact.content.match(/\S+/g)?.length ?? 0)));
+					renderedTurns.add(addDisposableListener(documentButton, EventType.CLICK, () => {
+						const latest = store.readDocument(owner, documentId);
+						if (latest) { void openReplyDocument(latest.content, { accountId: owner, documentId }); }
+						else if (accountId === owner && taskId === thread) { setFeedback(localize('assistantView.documentMissing', "This document is no longer available.")); }
+					}));
+				}
+				const replyDocument = assistantReplyDocument(turn.reply);
+				if (replyDocument) {
+					const documentButton = append(item, $('button.reach-assistant-document', {
+						type: 'button',
+						title: localize('assistantView.openDocumentTip', "Open this reply as a Markdown document"),
+					}));
+					append(documentButton, $('span' + ThemeIcon.asCSSSelector(Codicon.file), { 'aria-hidden': 'true' }));
+					const documentText = append(documentButton, $('span.reach-assistant-document-text'));
+					append(documentText, $('span.reach-assistant-document-title', {}, replyDocument.title ?? localize('assistantView.documentTitle', "Assistant document")));
+					append(documentText, $('span.reach-assistant-document-meta', {}, localize('assistantView.documentMeta', "{0} words · Open document", replyDocument.words)));
+					renderedTurns.add(addDisposableListener(documentButton, EventType.CLICK, () => void openReplyDocument(turn.reply)));
+				}
 				const recoveryConnections = Array.isArray(turn.unavailableConnections)
 					? turn.unavailableConnections.filter(connection => typeof connection?.id === 'string' && typeof connection.name === 'string')
 					: [];
@@ -1599,8 +2541,8 @@ class AssistantView extends AbstractCustomView {
 				if (routineId) {
 					addRecoveryAction(localize('assistantView.rerunRoutine', "Run routine again"), () => void runRoutine(owner, routineId));
 				}
-				const routineDraft = turn.routineDraft;
-				if (routineDraft) {
+				const routineDrafts = Array.isArray(turn.routineDrafts) ? turn.routineDrafts : turn.routineDraft ? [turn.routineDraft] : [];
+				for (const routineDraft of routineDrafts) {
 					const review = append(item, $('button.reach-assistant-link', { type: 'button' }, localize('assistantView.reviewRoutine', "Review routine: {0}", routineDraft.name)));
 					renderedTurns.add(addDisposableListener(review, EventType.CLICK, () => {
 						if (accountId && !taskId) { void saveRoutine(accountId, routineDraft); }
@@ -1608,7 +2550,22 @@ class AssistantView extends AbstractCustomView {
 				}
 				const tools = append(item, $('.reach-assistant-reply-tools'));
 				const actions = renderedTurns.add(new ActionBar(tools, { ariaLabel: localize('assistantView.replyActions', "Reply actions") }));
+				let pointerPassage: { text: string | undefined } | undefined;
+				renderedTurns.add(addDisposableListener(tools, EventType.POINTER_DOWN, event => {
+					pointerPassage = isHTMLElement(event.target) && actions.getAction(event.target)?.id === 'assistant.saveIdea'
+						? { text: assistantReplyPassage(reply.element, turn.reply) } : undefined;
+				}, true));
+				renderedTurns.add(addDisposableListener(tools, EventType.KEY_DOWN, () => { pointerPassage = undefined; }));
+				renderedTurns.add(addDisposableListener(tools, 'pointercancel', () => { pointerPassage = undefined; }));
 				actions.push([
+					renderedTurns.add(new Action('assistant.saveIdea', localize('assistantView.saveReply', "Save reply"), ThemeIcon.asClassName(Codicon.bookmark), true, () => {
+						if (accountId !== owner || taskId !== thread) { return; }
+						const text = pointerPassage ? pointerPassage.text : assistantReplyPassage(reply.element, turn.reply);
+						pointerPassage = undefined;
+						if (text === undefined) { setFeedback(localize('assistantView.ideaSelection', "Select a passage within a single reply.")); return; }
+						saveIdea(owner, thread, text);
+					})),
+					renderedTurns.add(new Action('assistant.openDocument', localize('assistantView.openDocument', "Open as document"), ThemeIcon.asClassName(Codicon.file), true, () => openReplyDocument(turn.reply))),
 					renderedTurns.add(new Action('assistant.copyReply', localize('assistantView.copy', "Copy reply"), ThemeIcon.asClassName(Codicon.copy), true, async () => {
 						await this.clipboard.writeText(turn.reply);
 						setFeedback(localize('assistantView.copied', "Reply copied."));
@@ -1627,15 +2584,14 @@ class AssistantView extends AbstractCustomView {
 							setFeedback(localize('assistantView.waitForReply', "Wait for the current reply first."));
 							return;
 						}
-						store.truncateTurns(accountId, turnIndex, taskId);
-						void this.runs.send(accountId, turn.prompt, taskId);
+						void this.runs.send(accountId, turn.prompt, taskId, { requestStart: turn.requestStart, replaceFrom: turnIndex, preserveDraft: true });
 					}))] : []),
 					renderedTurns.add(new Action('assistant.editPrompt', turn.routineId ? localize('assistantView.routines', "Assistant routines") : localize('assistantView.editPrompt', "Edit prompt in composer"), ThemeIcon.asClassName(Codicon.edit), true, () => {
 						if (turn.routineId && accountId) {
 							void manageRoutines(accountId);
 							return;
 						}
-						if (accountId) { setEditingFrom({ index: turnIndex, accountId, taskId }); }
+						if (accountId) { setEditingFrom({ index: turnIndex, original: turns, accountId, taskId }); }
 						setInput(turn.prompt);
 						this.composer?.focus();
 					})),
@@ -1700,7 +2656,7 @@ class AssistantView extends AbstractCustomView {
 					? localize('assistantTask.needsApproval', "Needs approval")
 					: interrupted ? localize('assistantTask.interrupted', "Interrupted") : statuses[task.status];
 				append(row, $('span.reach-assistant-muted', { role: 'status' }, taskStatus));
-			if (task.update) { append(row, $('span.reach-assistant-muted.reach-assistant-task-update', { title: task.update }, task.update)); }
+				if (task.update) { append(row, $('span.reach-assistant-muted.reach-assistant-task-update', { title: task.update }, task.update)); }
 				const actions = append(row, $('span.reach-assistant-task-actions'));
 				if (interrupted) {
 					const resume = append(actions, $('button.reach-assistant-task-action', { type: 'button', title: resumeTaskLabel }));
@@ -1713,22 +2669,26 @@ class AssistantView extends AbstractCustomView {
 				const rename = append(actions, $('button.reach-assistant-task-action', { type: 'button', title: localize('assistantView.renameTask', "Rename task") }));
 				append(rename, $('span' + ThemeIcon.asCSSSelector(Codicon.edit), { 'aria-hidden': 'true' }));
 				taskListeners.add(addDisposableListener(rename, EventType.CLICK, async () => {
-					if (!accountId) { return; }
+					const owner = accountId;
+					const check = this.accountCheck;
+					if (!owner || check !== verifiedAccountCheck) { return; }
 					const title = await this.quickInput.input({ title: localize('assistantView.renameTask', "Rename task"), value: task.title });
-					if (title !== undefined) { store.updateTask(accountId, task.id, { title: title.trim() }); }
+					if (title !== undefined && owner === accountId && check === this.accountCheck) { store.updateTask(owner, task.id, { title: title.trim() }); }
 				}));
 				const remove = append(actions, $('button.reach-assistant-task-action', { type: 'button', title: localize('assistantView.deleteTask', "Delete task") }));
 				append(remove, $('span' + ThemeIcon.asCSSSelector(Codicon.trash), { 'aria-hidden': 'true' }));
 				taskListeners.add(addDisposableListener(remove, EventType.CLICK, async () => {
-					if (!accountId) { return; }
+					const owner = accountId;
+					const check = this.accountCheck;
+					if (!owner || check !== verifiedAccountCheck) { return; }
 					const confirmed = await this.dialogs.confirm({
 						message: localize('assistantView.deleteTaskConfirm', "Delete this task and its conversation?"),
 						detail: task.title || undefined,
 						primaryButton: localize('assistantView.deleteTaskButton', "Delete"),
 					});
-					if (confirmed.confirmed) {
-						this.runs.stop(accountId, task.id);
-						store.deleteTask(accountId, task.id);
+					if (confirmed.confirmed && owner === accountId && check === this.accountCheck) {
+						this.runs.stop(owner, task.id);
+						store.deleteTask(owner, task.id);
 						if (taskId === task.id) { openThread(); }
 					}
 				}));
@@ -1851,10 +2811,12 @@ class AssistantView extends AbstractCustomView {
 					allowanceExhausted: localize('assistantView.allowanceExhausted', "Your REACH subscription request allowance is exhausted."),
 					noModel: localize('assistantView.noChatModel', "REACH didn’t list an eligible chat model for this account."),
 					modelUnavailable: localize('assistantView.modelUnavailable', "This model is no longer available. Choose another model and send again."),
+					historyChanged: localize('assistantView.historyChanged', "This conversation changed during regeneration. Select the reply you want to regenerate again."),
 					busy: localize('assistantView.busy', "This conversation is already waiting for a reply."),
 					stopped: routineId ? localize('assistantView.stoppedRoutine', "Routine stopped. You can run it again.")
 						: started ? localize('assistantView.stoppedQueued', "Stopped. Your queued message is saved for retry.") : localize('assistantView.stopped', "Stopped. Your draft is ready to send again."),
 					unavailable: localize('assistantView.failed', "REACH couldn’t complete this request. Send again to retry."),
+					outputLimit: localize('assistantView.outputLimit', "The model reached its output limit before finishing. Ask for a shorter response or choose another model."),
 				};
 				setFeedback(error ? messages[error] : '', error && (routineId || this.runs.getFailedPrompt(accountId, taskId)) ? {
 					label: localize('assistantView.retryLink', "Retry"),
@@ -1874,7 +2836,6 @@ class AssistantView extends AbstractCustomView {
 			renderRun();
 			renderSuggestions();
 			renderConnections();
-			agentChatsButton.hidden = !accountId || !store.read(accountId).agentChats?.length;
 			if (taskId && accountId) {
 				taskName.textContent = store.read(accountId).tasks?.find(task => task.id === taskId)?.title || localize('assistantView.newTask', "New task");
 			}
@@ -1884,7 +2845,9 @@ class AssistantView extends AbstractCustomView {
 		};
 		const openThread = (target?: string, focus = true, savePrevious = true) => {
 			if (!accountId) { return; }
+			savedIdeasPicker.clear();
 			const account = accountId;
+			if (target !== taskId) { this.composer?.cancelDictation(); }
 			saveDraft.cancel();
 			if (savePrevious) { this.saveDraft?.(); }
 			const savedTask = target ? store.read(account).tasks?.find(task => task.id === target) : undefined;
@@ -1920,8 +2883,10 @@ class AssistantView extends AbstractCustomView {
 		const rootWatch = this._register(new MutableDisposable<DisposableStore>());
 		const refresh = async () => {
 			const check = ++this.accountCheck;
+			savedIdeasPicker.clear();
 			const account = await this.reach.getAccount();
 			if (check !== this.accountCheck) { return; }
+			verifiedAccountCheck = check;
 			const next = account?.subscriptionActive ? account.id : undefined;
 			gate.hidden = !!next;
 			manage.hidden = !!next;
@@ -1933,6 +2898,7 @@ class AssistantView extends AbstractCustomView {
 					: localize('assistantView.signInRequired', "Sign in with your SignalREACH account to connect Assistant.");
 			}
 			if (next === accountId) { return; }
+			this.composer?.cancelDictation();
 			this.saveDraft?.();
 			accountId = next;
 			taskId = undefined;
@@ -1968,6 +2934,17 @@ class AssistantView extends AbstractCustomView {
 					textOnly: true,
 					hostRequest: { isRunning: requestInProgress, stop: stopRequest },
 					slashCommands: assistantSlashCommands,
+					mentionCompletions: async () => {
+						const owner = accountId;
+						if (!owner) { return []; }
+						const scheduler = this.instantiation.invokeFunction(accessor => accessor.get(IAssistantBriefingScheduler));
+						const routines = await scheduler.getRoutines(owner).catch(() => []);
+						if (owner !== accountId) { return []; }
+						return [...routines].sort((a, b) => a.name.localeCompare(b.name)).map(routine => ({
+							label: routine.name,
+							description: `${routine.enabled ? '' : `${localize('assistantView.routineDisabled', "Disabled")} · `}${routine.cadence === 'weekdays' ? localize('assistantView.routineWeekdays', "Weekdays") : localize('assistantView.routineDaily', "Daily")} · ${formatScheduleTime(routine)}`,
+						}));
+					},
 					renderRepositoryControls: false,
 					renderChatPet: false,
 					voiceTarget: false,
@@ -2020,8 +2997,8 @@ class AssistantView extends AbstractCustomView {
 				const selected = await this.quickInput.pick(approvable.map(entry => ({
 					label: entry.label,
 					description: `${entry.name}${entry.kind === 'mcp' ? ' · MCP' : ''}`,
-					picked: allowed.has(entry.name),
-					tool: entry.name,
+					picked: allowed.has(assistantToolApprovalKey(entry)),
+					tool: assistantToolApprovalKey(entry),
 				})), {
 					canPickMany: true,
 					title: localize('assistantView.allowedToolsTitle', "Tools that may run without asking"),
@@ -2073,6 +3050,7 @@ class AssistantView extends AbstractCustomView {
 			if (accountId) { openThread(createTask(accountId)); }
 		}));
 		this._register(addDisposableListener(agentChatsButton, EventType.CLICK, () => void showAgentChats()));
+		this._register(addDisposableListener(savedIdeasButton, EventType.CLICK, () => void browseSavedIdeas()));
 		this._register(addDisposableListener(worktreeButton, EventType.CLICK, () => void pickWorktree()));
 		this._register(addDisposableListener(back, EventType.CLICK, () => openThread()));
 		this._register(addDisposableListener(queuedSend, EventType.CLICK, () => {
@@ -2121,7 +3099,7 @@ class AssistantView extends AbstractCustomView {
 					label: `${model.id === selectedModelId ? '$(check) ' : ''}${model.name}`,
 					description: [
 						model.id === model.name ? undefined : model.id,
-						model.supportsTools === false ? localize('assistantView.modelNoTools', "no tool use") : undefined,
+						model.supportsTools === false ? localize('assistantView.modelTextTools', "text-based tool calls") : undefined,
 					].filter(Boolean).join(' — ') || undefined,
 					modelId: model.id,
 				})),
@@ -2188,10 +3166,15 @@ export class AssistantSessionContribution extends Disposable {
 	constructor(@ICustomViewService customViews: ICustomViewService) {
 		super();
 		const routinesRequested = observableValue(this, false);
+		const clearChatRequested = this._register(new Emitter<void>());
 		this._register(customViews.registerCustomView({
 			id: ASSISTANT_CUSTOM_VIEW_ID,
-			ctor: new SyncDescriptor(AssistantView, [routinesRequested]),
+			ctor: new SyncDescriptor(AssistantView, [routinesRequested, clearChatRequested.event]),
 			actions: { style: 'buttonBar', menuId: AgentsWindowMenus.CustomViewAssistant },
+			// The editor and the bottom panel stay usable beside the Assistant view, which covers only
+			// the sessions grid and the side panel: its activity bar's tabs open in them, as a chat's do.
+			coveredParts: [Parts.SESSIONS_PART, Parts.AUXILIARYBAR_PART],
+			activityBar: { menuId: Menus.AssistantActivityBar, contextMenuId: Menus.AssistantActivityBarContext },
 		}, { restore: true }));
 		this._register(autorun(reader => {
 			if (customViews.activeCustomView.read(reader)?.id !== ASSISTANT_CUSTOM_VIEW_ID) {
@@ -2213,7 +3196,11 @@ export class AssistantSessionContribution extends Disposable {
 					&& extUriBiasedIgnorePathCase.isEqual(selection.folderUri, editor.selectedFolder)
 					&& editor.selectionVersion === composerService.userWorkspaceSelectionVersion.get()
 					&& editor.navigationVersion === composerService.userNavigationVersion.get();
-				const fileRoots = useEditorRoots ? editor.fileRoots : workspace && !workspace.isVirtualWorkspace ? workspace.folders.map(folder => folder.workingDirectory) : undefined;
+				const selectedLocalFolder = !workspace && project?.scheme === Schemas.file
+					&& (!editor || selection?.origin === WorkspaceSelectionOrigin.User) ? project : undefined;
+				const fileRoots = useEditorRoots ? editor.fileRoots
+					: workspace && !workspace.isVirtualWorkspace ? workspace.folders.map(folder => folder.workingDirectory)
+						: selectedLocalFolder ? [selectedLocalFolder] : undefined;
 				const fileRootNames = useEditorRoots ? editor.fileRootNames : workspace && !workspace.isVirtualWorkspace ? workspace.folders.map(folder => folder.name) : undefined;
 				target.target = {
 					workspace: project,
@@ -2234,7 +3221,7 @@ export class AssistantSessionContribution extends Disposable {
 					f1: true,
 					precondition: IsSessionsWindowContext,
 					menu: [
-						{ id: AgentsWindowMenus.CustomViewAssistant, group: 'navigation' },
+						{ id: AgentsWindowMenus.CustomViewAssistant, group: 'navigation', order: 1 },
 						{ id: AgentsWindowMenus.CustomViewAutomations, group: 'navigation', order: 4, when: IsSessionsWindowContext },
 					],
 				});
@@ -2249,5 +3236,83 @@ export class AssistantSessionContribution extends Disposable {
 				}
 			}
 		}));
+		this._register(registerAction2(class ClearAssistantChatAction extends Action2 {
+			constructor() {
+				super({
+					id: CLEAR_ASSISTANT_CHAT_ACTION_ID,
+					title: localize2('assistantView.clearChatAction', "Clear Chat"),
+					icon: Codicon.trash,
+					precondition: IsSessionsWindowContext,
+					menu: { id: AgentsWindowMenus.CustomViewAssistant, group: 'navigation', order: 2 },
+				});
+			}
+
+			override run(): void {
+				if (customViews.activeCustomView.get()?.id === ASSISTANT_CUSTOM_VIEW_ID) {
+					clearChatRequested.fire();
+				}
+			}
+		}));
 	}
 }
+
+//#region Assistant Activity Bar
+
+export const TOGGLE_ASSISTANT_BROWSER_ACTION_ID = 'sessions.assistant.toggleBrowser';
+export const TOGGLE_ASSISTANT_TERMINAL_ACTION_ID = 'sessions.assistant.toggleTerminal';
+const assistantActivityBarWhen = ContextKeyExpr.and(IsSessionsWindowContext, IsAuxiliaryWindowContext.toNegated());
+
+registerAction2(class ToggleAssistantBrowserAction extends Action2 {
+	constructor() {
+		const when = ContextKeyExpr.and(assistantActivityBarWhen, DesktopLayoutContext);
+		super({
+			id: TOGGLE_ASSISTANT_BROWSER_ACTION_ID,
+			title: localize2('assistantActivityBar.browser', "Browser"),
+			icon: Codicon.globe,
+			precondition: when,
+			toggled: ContextKeyExpr.and(MainEditorAreaVisibleContext, ActiveEditorContext.isEqualTo(BrowserEditorInput.EDITOR_ID)),
+			menu: { id: Menus.AssistantActivityBar, group: '1_browser', order: 1, when },
+		});
+	}
+
+	override async run(accessor: ServicesAccessor): Promise<void> {
+		const layout = accessor.get(IWorkbenchLayoutService);
+		const group = accessor.get(IEditorGroupsService).mainPart.activeGroup;
+		if (layout.isVisible(Parts.EDITOR_PART) && group.activeEditor instanceof BrowserEditorInput) {
+			layout.setPartHidden(true, Parts.EDITOR_PART);
+			layout.focusPart(Parts.CUSTOM_VIEW_GRID_PART);
+			return;
+		}
+		await accessor.get(ICommandService).executeCommand(OPEN_BROWSER_COMMAND_ID);
+	}
+});
+
+registerAction2(class ToggleAssistantTerminalAction extends Action2 {
+	constructor() {
+		const when = ContextKeyExpr.and(assistantActivityBarWhen, ContextKeyExpr.or(TerminalContextKeys.processSupported, TerminalContextKeys.terminalHasBeenCreated));
+		super({
+			id: TOGGLE_ASSISTANT_TERMINAL_ACTION_ID,
+			title: localize2('assistantActivityBar.terminal', "Terminal"),
+			icon: Codicon.terminal,
+			precondition: when,
+			toggled: ContextKeyExpr.and(PanelVisibleContext, ActivePanelContext.isEqualTo(TERMINAL_VIEW_ID)),
+			menu: { id: Menus.AssistantActivityBar, group: '2_terminal', order: 1, when },
+		});
+	}
+
+	override async run(accessor: ServicesAccessor): Promise<void> {
+		const layout = accessor.get(IWorkbenchLayoutService);
+		if (layout.isVisible(Parts.PANEL_PART) && accessor.get(IViewsService).isViewVisible(TERMINAL_VIEW_ID)) {
+			layout.setPartHidden(true, Parts.PANEL_PART);
+			layout.focusPart(Parts.CUSTOM_VIEW_GRID_PART);
+			return;
+		}
+		const groups = accessor.get(ITerminalGroupService);
+		if (!groups.activeInstance) {
+			await accessor.get(ITerminalService).createTerminal({ location: TerminalLocation.Panel });
+		}
+		await groups.showPanel(true);
+	}
+});
+
+//#endregion

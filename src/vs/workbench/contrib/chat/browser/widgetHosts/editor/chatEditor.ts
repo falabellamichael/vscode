@@ -226,6 +226,7 @@ export class ChatEditor extends AbstractEditorWithViewState<IChatEditorViewState
 					readOnlyBannerAtTop: true,
 					renderFollowups: true,
 					renderArtifactsWidget: false,
+					outputTypePicker: true,
 					supportsFileReferences: true,
 					clear: resolvedSessionType => this.clear(resolvedSessionType),
 					enableFind: true,

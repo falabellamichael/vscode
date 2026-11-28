@@ -233,6 +233,10 @@ export const inactiveSessionViewForeground = registerColor(
 	localize('inactiveSessionView.foreground', 'Foreground color of an inactive session view in the agent sessions window.')
 );
 
+registerColor('assistantView.foreground', null, localize('assistantView.foreground', 'Text and icons on the Assistant conversation canvas.'));
+registerColor('assistantView.descriptionForeground', null, localize('assistantView.descriptionForeground', 'Secondary text on the Assistant conversation canvas.'));
+registerColor('assistantView.linkForeground', null, localize('assistantView.linkForeground', 'Links on the Assistant conversation canvas.'));
+
 // ============================================================================
 // Agents window graphic (Welcome page)
 // ============================================================================

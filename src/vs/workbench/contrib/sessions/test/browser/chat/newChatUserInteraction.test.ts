@@ -26,6 +26,7 @@ import { ISessionsService } from '../../../browser/sessionsService.js';
 import { ITestSessionsService, ITestSessionWithChat, testGridPanes } from '../sessionHostTestUtils.js';
 import { IChat, ISession, SessionStatus } from '../../../../../services/sessions/common/session.js';
 import { ISendRequestOptions, ISessionsManagementService } from '../../../common/sessionsManagement.js';
+import { SESSION_OUTPUT_TYPE_META_KEY } from '../../../../chat/common/sessionOutputType.js';
 import { SharedChatInputComposer } from '../../../browser/chat/sharedChatInputComposer.js';
 import { INewChatInputSendRequest } from '../../../browser/chat/newChatComposerInput.js';
 import { NewChatInSessionWidget } from '../../../browser/chat/newChatInSessionWidget.js';
@@ -103,12 +104,13 @@ suite('Sessions - New chat user-perceived TTFP', () => {
 			_suppressSendProgress: observableValue('suppressSendProgress', false),
 			_userInteractionSource: sourceOwner,
 			_canSendRequest: constObservable(true),
+			_outputType: observableValue('outputType', 'auto'),
 			_modelRef: { value: undefined },
 			options: { session: constObservable(h.session), inputVisible: h.sourceVisible, hostVisible: h.hostVisible, sendRequest, confirmSend },
 			instantiationService: h.instantiationService,
 			// As the service answers for a handler: `true` handled the request, `false` went on
 			chatSubmitRequestHandlerService: { tryHandle: async () => ({ outcome: await tryHandle() ? ChatSubmitRequestOutcome.Handled : ChatSubmitRequestOutcome.Continue }) },
-			storageService: { store: () => { } },
+			storageService: { get: () => undefined, store: () => { } },
 			logService: { error: () => { } },
 		});
 		return { input, sourceOwner };
@@ -141,6 +143,24 @@ suite('Sessions - New chat user-perceived TTFP', () => {
 	}
 
 	for (const newSession of [true, false]) {
+		test(`${newSession ? 'new-session' : 'peer-chat'} explicit output choices are sent as request metadata`, async () => {
+			const h = createHarness(newSession);
+			let sentOptions: ISendRequestOptions | undefined;
+			const { input } = createInput(h, createSend(h, newSession, async options => {
+				sentOptions = options;
+			}));
+			input.setOutputType('website');
+
+			assert.strictEqual(await input.submit(), true);
+			assert.deepStrictEqual({
+				metadata: sentOptions?.metadata,
+				outputContext: sentOptions?.attachedContext?.filter(entry => entry.id.startsWith('session-output:')).map(entry => entry.id),
+			}, {
+				metadata: { [SESSION_OUTPUT_TYPE_META_KEY]: 'website' },
+				outputContext: ['session-output:website'],
+			});
+		});
+
 		test(`${newSession ? 'new-session' : 'peer-chat'} queued responses are excluded even when they later make progress`, async () => {
 			const h = createHarness(newSession);
 			let sentOptions: ISendRequestOptions | undefined;

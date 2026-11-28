@@ -41,7 +41,7 @@ else if (globalThis._VSCODE_PRODUCT_JSON && globalThis._VSCODE_PACKAGE_JSON) {
 	const packageConfiguration = globalThis._VSCODE_PACKAGE_JSON as unknown as IPackageConfiguration;
 
 	// Running out of sources
-	if (env['VSCODE_DEV']) {
+	if (env['VSCODE_DEV'] && env['VSCODE_SIGNAL_C_PRIMARY'] !== '1') {
 		Object.assign(product, {
 			nameShort: `${product.nameShort} Dev`,
 			nameLong: `${product.nameLong} Dev`,

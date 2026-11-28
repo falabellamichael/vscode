@@ -257,4 +257,4 @@ class BrowserChatAgentToolsContribution extends Disposable implements IWorkbench
 		}]);
 	}
 }
-registerWorkbenchContribution2(BrowserChatAgentToolsContribution.ID, BrowserChatAgentToolsContribution, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(BrowserChatAgentToolsContribution.ID, BrowserChatAgentToolsContribution, WorkbenchPhase.BlockRestore);

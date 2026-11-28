@@ -1916,6 +1916,21 @@ suite('ChatInputModelSelectionController', () => {
 		});
 	});
 
+	test('a first send cannot reuse another provider model while the new catalog loads', () => {
+		const type = 'agent-host-reach';
+		const previous = targetedModel('agent-host-copilotcli:example', 'agent-host-copilotcli');
+		const next = targetedModel('agent-host-reach:example', type);
+		const state: IRuntimeState = { sessionType: type, models: [], awaitsSessionModels: true };
+		const changes = disposables.add(new Emitter<string>());
+		const controller = disposables.add(new ChatInputModelSelectionController(createRuntime(state, changes, [])));
+		controller.applySelection(previous, () => { }, false);
+		controller.ensureCurrentModelSupported();
+		assert.strictEqual(controller.currentModel.get(), undefined);
+		state.models = [next];
+		controller.selectDefault();
+		assert.strictEqual(controller.currentModel.get()?.identifier, next.identifier);
+	});
+
 	test('clears the previous model while the destination harness pool loads', () => {
 		const sessionType = 'agent-host-test';
 		const general = model('test/general');

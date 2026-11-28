@@ -46,7 +46,7 @@
 	justify-content: center;
 	width: 20px;
 	height: 20px;
-	color: var(--vscode-titleBar-activeForeground);
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
 }
 
 .monaco-workbench .workspace-mode-switch:hover:not(.disabled) {

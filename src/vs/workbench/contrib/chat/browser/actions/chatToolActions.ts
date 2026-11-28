@@ -18,6 +18,7 @@ import { IInstantiationService } from '../../../../../platform/instantiation/com
 import { KeybindingWeight } from '../../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { ITelemetryService } from '../../../../../platform/telemetry/common/telemetry.js';
 import { ChatContextKeys } from '../../common/actions/chatContextKeys.js';
+import { COHERE_CHAT_SESSION_TYPE, REACH_CHAT_SESSION_TYPE } from '../../../../../platform/native/common/native.js';
 import { ConfirmedReason, IChatToolInvocation, ToolConfirmKind } from '../../common/chatService/chatService.js';
 import { isResponseVM } from '../../common/model/chatViewModel.js';
 import { ChatModeKind } from '../../common/constants.js';
@@ -140,7 +141,7 @@ export class ConfigureToolsAction extends Action2 {
 			menu: [{
 				when: ContextKeyExpr.and(
 					ChatContextKeys.chatModeKind.isEqualTo(ChatModeKind.Agent),
-					ChatContextKeys.lockedToCodingAgent.negate(),
+					ContextKeyExpr.or(ChatContextKeys.lockedToCodingAgent.negate(), ChatContextKeys.chatSessionType.isEqualTo(REACH_CHAT_SESSION_TYPE), ChatContextKeys.chatSessionType.isEqualTo(COHERE_CHAT_SESSION_TYPE)),
 				),
 				id: MenuId.ChatInput,
 				group: 'navigation',

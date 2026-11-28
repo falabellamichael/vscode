@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { isCancellationError } from '../../../../base/common/errors.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { TestDialogService } from '../../../../platform/dialogs/test/common/testDialogService.js';
@@ -13,6 +15,8 @@ import { TestNotificationService } from '../../../../platform/notification/test/
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
+import { IURLService } from '../../../../platform/url/common/url.js';
+import { NativeURLService } from '../../../../platform/url/common/urlService.js';
 import { NullTelemetryService } from '../../../../platform/telemetry/common/telemetryUtils.js';
 import { MainThreadAuthentication } from '../../browser/mainThreadAuthentication.js';
 import { ExtHostAuthenticationShape, ExtHostContext, MainContext } from '../../common/extHost.protocol.js';
@@ -85,10 +89,57 @@ suite('MainThreadAuthentication', () => {
 		instantiationService.stub(ITelemetryService, NullTelemetryService);
 		instantiationService.stub(IBrowserWorkbenchEnvironmentService, TestEnvironmentService);
 		instantiationService.stub(IProductService, TestProductService);
+		instantiationService.stub(IURLService, disposables.add(new NativeURLService(TestProductService)));
 
 		rpcProtocol = disposables.add(new TestRPCProtocol());
 		mainThreadAuthentication = disposables.add(instantiationService.createInstance(MainThreadAuthentication, rpcProtocol));
 		rpcProtocol.set(MainContext.MainThreadAuthentication, mainThreadAuthentication);
+	});
+
+	test('routes concurrent browser returns from the same provider using their own nonce', async () => {
+		const urlService = instantiationService.get(IURLService);
+		const callback = URI.parse('signal-c://dynamicauthprovider/issuer.example/authorize');
+		const firstUri = callback.with({ query: 'nonce=first' });
+		const secondUri = callback.with({ query: 'nonce=second' });
+		const first = mainThreadAuthentication.$waitForUriHandler(firstUri, CancellationToken.None);
+		const second = mainThreadAuthentication.$waitForUriHandler(secondUri, CancellationToken.None);
+		const firstReturn = firstUri.with({ query: 'nonce=first&code=first-grant' });
+		const secondReturn = secondUri.with({ query: 'nonce=second&code=second-grant' });
+
+		assert.strictEqual(await urlService.open(callback.with({ query: 'code=missing-nonce' })), false);
+		assert.strictEqual(await urlService.open(callback.with({ query: 'nonce=first&nonce=second&code=ambiguous' })), false);
+		assert.strictEqual(await urlService.open(secondReturn), true);
+		assert.strictEqual(await second, secondReturn);
+		assert.strictEqual(await urlService.open(secondReturn), false);
+		assert.strictEqual(await urlService.open(firstReturn), true);
+		assert.strictEqual(await first, firstReturn);
+	});
+
+	test('cancellation and extension host disposal remove waiting browser callbacks', async () => {
+		const urlService = instantiationService.get(IURLService);
+		const token = disposables.add(new CancellationTokenSource());
+		const callback = URI.parse('signal-c://dynamicauthprovider/issuer.example/authorize?nonce=canceled');
+		const canceled = assert.rejects(mainThreadAuthentication.$waitForUriHandler(callback, token.token), isCancellationError);
+		token.cancel();
+		await canceled;
+		assert.strictEqual(await urlService.open(callback), false);
+
+		const otherCallback = callback.with({ query: 'nonce=disposed' });
+		const disposed = assert.rejects(mainThreadAuthentication.$waitForUriHandler(otherCallback, CancellationToken.None), isCancellationError);
+		mainThreadAuthentication.dispose();
+		await disposed;
+		assert.strictEqual(await urlService.open(otherCallback), false);
+	});
+
+	test('requires the original window on a pending HTTPS OAuth return', async () => {
+		const urlService = instantiationService.get(IURLService);
+		const callback = URI.parse('signal-c://dynamicauthprovider/https/authorize?nonce=fixture&windowId=41');
+		const pending = mainThreadAuthentication.$waitForUriHandler(callback, CancellationToken.None);
+		assert.strictEqual(await urlService.open(callback.with({ query: 'nonce=fixture&windowId=4&code64=YQ' })), false);
+		assert.strictEqual(await urlService.open(callback.with({ query: 'nonce=fixture&windowId=41&windowId=4&code64=YQ' })), false);
+		const returned = callback.with({ query: `${callback.query}&code64=YQ` });
+		assert.strictEqual(await urlService.open(returned), true);
+		assert.strictEqual(await pending, returned);
 	});
 
 	test('provider registration completes without errors', async () => {
@@ -122,17 +173,23 @@ suite('MainThreadAuthentication', () => {
 			$onDidChangeDynamicAuthProviderTokens: async () => { },
 		}));
 		const storage = instantiationService.get(IDynamicAuthenticationProviderStorageService);
-		await storage.storeClientRegistration(providerId, authorizationServer.toString(true), 'configured-client', 'configured-secret');
+		await storage.storeClientRegistration(providerId, authorizationServer.toString(true), 'configured-client', 'configured-secret', undefined, 'client_secret_basic');
 		await storage.setSessionsForDynamicAuthProvider(providerId, 'configured-client', tokens);
 		const metadata = { issuer: authorizationServer.toString(true), response_types_supported: ['code'] };
 
-		const provider = await instantiationService.get(IAuthenticationService).createDynamicAuthenticationProvider(authorizationServer, metadata, resource, undefined, undefined, providerId);
+		const authenticationService = instantiationService.get(IAuthenticationService);
+		const provider = await authenticationService.createDynamicAuthenticationProvider(authorizationServer, metadata, resource, undefined, undefined, providerId);
+		await mainThreadAuthentication.$unregisterAuthenticationProvider(providerId);
+		await authenticationService.createDynamicAuthenticationProvider(authorizationServer, metadata, resource, 'other-client', 'other-secret', providerId);
 		await mainThreadAuthentication.$unregisterAuthenticationProvider(providerId);
 		await rpcProtocol.sync();
 
 		assert.deepStrictEqual({ providerId: provider?.id, registrations }, {
 			providerId,
-			registrations: [[authorizationServer.toJSON(), metadata, resource, 'configured-client', 'configured-secret', tokens, providerId]],
+			registrations: [
+				[authorizationServer.toJSON(), metadata, resource, 'configured-client', 'configured-secret', tokens, providerId, 'client_secret_basic', undefined],
+				[authorizationServer.toJSON(), metadata, resource, 'other-client', 'other-secret', undefined, providerId, undefined, undefined],
+			],
 		});
 	});
 

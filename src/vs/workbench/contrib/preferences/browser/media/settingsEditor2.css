@@ -3,7 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-.editor-instance#workbench\.editor\.settings2:focus {
+.editor-instance[data-editor-id="workbench.editor.settings2"] {
+	background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
+	display: flow-root;
+}
+
+.editor-instance[data-editor-id="workbench.editor.settings2"]:focus {
 	outline: none;
 }
 

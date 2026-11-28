@@ -1233,7 +1233,7 @@ suite('CodexAgent model refresh', () => {
 		await secondStarted.p;
 		assert.strictEqual(requestIndex, 2);
 		await secondResponse.complete({
-			account: { type: 'chatgpt', email: 'new@example.com', planType: 'pro' },
+			account: { type: 'chatgpt', email: 'new@example.com', planType: 'pro', workspaceName: null },
 			requiresOpenaiAuth: true,
 			workspaceRouting: null,
 		});

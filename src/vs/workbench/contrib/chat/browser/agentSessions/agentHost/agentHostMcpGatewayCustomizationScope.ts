@@ -17,6 +17,8 @@ import { IInstantiationService } from '../../../../../../platform/instantiation/
 import { McpServerType } from '../../../../../../platform/mcp/common/mcpPlatformTypes.js';
 import { IMcpGatewayResultServer, IWorkbenchMcpGatewayService } from '../../../../mcp/common/mcpGatewayService.js';
 import { IMcpService } from '../../../../mcp/common/mcpTypes.js';
+import { ISignalCDirectMail } from '../../../../mcp/browser/signalCDirectMail.js';
+import { directMailGatewayId } from '../../../../mcp/browser/signalCDirectMailGateway.js';
 import { toAgentHostClientCustomization } from '../../../common/agentHostSessionCustomizations.js';
 import { IAgentCustomizationScope } from './agentHostActiveClientService.js';
 import { isAgentHostMcpGatewayServer } from './agentHostMcpServerSupport.js';
@@ -46,6 +48,7 @@ export class AgentHostMcpGatewayCustomizationScope extends Disposable implements
 		@IMcpService mcpService: IMcpService,
 		@IWorkbenchMcpGatewayService private readonly _gatewayService: IWorkbenchMcpGatewayService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@ISignalCDirectMail directMail: ISignalCDirectMail,
 	) {
 		super();
 		this._register(_scope);
@@ -56,8 +59,9 @@ export class AgentHostMcpGatewayCustomizationScope extends Disposable implements
 		this.tools = _scope.tools;
 		this.isResolved = derived(this, reader => _scope.isResolved.read(reader) && this._ready.read(reader));
 		this._register(autorun(reader => {
-			const ids = mcpService.servers.read(reader).filter(server => isAgentHostMcpGatewayServer(server, server.readDefinitions().read(reader).collection, roots)).map(server => server.definition.id).sort();
-			this._refresh(ids);
+			const ids = mcpService.servers.read(reader).filter(server => isAgentHostMcpGatewayServer(server, server.readDefinitions().read(reader).collection, roots)).map(server => server.definition.id);
+			const mail = directMail.connections.read(reader).filter(connection => !connection.needsSignIn).map(directMailGatewayId);
+			this._refresh([...ids, ...mail].sort());
 		}));
 	}
 

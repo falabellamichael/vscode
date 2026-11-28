@@ -20,11 +20,13 @@ import { type ProtectedResourceMetadata } from '../../../../../../platform/agent
 import { AuthRequiredReason, NotificationType } from '../../../../../../platform/agentHost/common/state/sessionActions.js';
 import { type AgentInfo, type RootState } from '../../../../../../platform/agentHost/common/state/sessionState.js';
 import { CHATGPT_SUBSCRIPTION_MODEL_SOURCE_ID } from '../../../../../../platform/agentHost/common/agentModelSource.js';
+import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../../../platform/contextkey/common/contextkey.js';
 import { IDefaultAccountService } from '../../../../../../platform/defaultAccount/common/defaultAccount.js';
 import { IInstantiationService } from '../../../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
+import { REACH_ACCOUNT_ORIGIN, REACH_CHAT_PROVIDER_ID } from '../../../../../../platform/native/common/native.js';
 import { Registry } from '../../../../../../platform/registry/common/platform.js';
 import { getVirtualWorkspaceScheme } from '../../../../../../platform/workspace/common/virtualWorkspace.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
@@ -193,6 +195,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@IChatViewSessionsListService chatViewSessionsListService: IChatViewSessionsListService,
 		@IContextKeyService contextKeyService: IContextKeyService,
+		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super();
 		this._authRecovery = this._instantiationService.createInstance(AgentHostAuthenticationRecovery);
@@ -308,6 +311,9 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 	}
 
 	private _shouldRegisterAgent(provider: AgentProvider): boolean {
+		if (provider === REACH_CHAT_PROVIDER_ID && (isWeb || !this._isLocalAgentHost)) {
+			return false;
+		}
 		return shouldSurfaceLocalAgentHostProvider(provider, this._configurationService, this._surfacesAllAgents.get());
 	}
 
@@ -388,6 +394,9 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 			// agent host resolves. The paired `onDidChangeRequiresCopilotSignIn` lets
 			// the sessions service re-evaluate this when the set changes.
 			requiresCopilotSignIn: () => {
+				if (agent.provider === REACH_CHAT_PROVIDER_ID) {
+					return false;
+				}
 				const resources = this._protectedResourcesService.getProtectedResources(agent.provider);
 				return resources !== undefined ? protectedResourcesRequireGitHubCopilotSignIn(resources) : true;
 			},
@@ -395,7 +404,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 			agentHostProviderId: agent.provider,
 			supportsDelegation: false,
 			capabilities: {
-				supportsCheckpoints: true,
+				supportsCheckpoints: agent.provider !== REACH_CHAT_PROVIDER_ID,
 				supportsFileAttachments: true,
 				supportsPromptAttachments: true,
 				supportsImageAttachments: true,
@@ -487,7 +496,9 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 			supportsManagedPluginRetry: this._isLocalAgentHost && agent.provider === 'copilotcli' && !!this._agentHostService.retryManagedPlugins,
 			supportsComputerUseSetup: this._isLocalAgentHost && agent.provider === 'copilotcli' && isComputerUseSetupPlatform(),
 			onSessionMaterialized: resource => this._chatSessionsService.notifySessionMaterialized?.(resource),
-			resolveAuthentication: (resources) => this._resolveAuthenticationInteractively(resources),
+			prepareHistory: agent.provider === REACH_CHAT_PROVIDER_ID && !isWeb && this._isLocalAgentHost
+				? () => this._commandService.executeCommand<void>('_workbench.chat.prepareReachHistory') : undefined,
+			resolveAuthentication: resources => this._resolveAuthenticationInteractively(agent.provider, resources),
 			promptCacheNotification: this._promptCacheNotification,
 		}));
 		store.add(this._chatSessionsService.registerChatSessionContentProvider(sessionType, sessionHandler));
@@ -511,7 +522,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 	}
 
 	private async _handleAuthenticationSessionsChanged(providerId: string, removedSessions: readonly AuthenticationSession[]): Promise<void> {
-		const agents = this._getRootAgents();
+		const agents = this._getRootAgents().filter(agent => agent.provider !== REACH_CHAT_PROVIDER_ID);
 		if (removedSessions.length > 0) {
 			const generation = this._authenticationGeneration;
 			try {
@@ -541,6 +552,8 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 	 * Resolves tokens via the standard VS Code authentication service.
 	 */
 	private async _authenticateWithServer(agents: readonly AgentInfo[]): Promise<void> {
+		// REACH syncs its own desktop account credential through the local connection.
+		agents = agents.filter(agent => agent.provider !== REACH_CHAT_PROVIDER_ID);
 		const generation = this._authenticationGeneration;
 		if (!this._isAuthenticationCurrent(generation)) {
 			return;
@@ -583,7 +596,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 
 	private _authenticateNotificationResource(protectedResource: ProtectedResourceMetadata, reason: AuthRequiredReason | undefined): void {
 		const generation = this._authenticationGeneration;
-		if (!this._isAuthenticationCurrent(generation)) {
+		if (protectedResource.resource === REACH_ACCOUNT_ORIGIN || !this._isAuthenticationCurrent(generation)) {
 			return;
 		}
 		this._agentHostService.setAuthenticationPending(true);
@@ -611,7 +624,15 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 	 * creates a session (which triggers the login UI), and pushes the token
 	 * to the server. Returns true if authentication succeeded.
 	 */
-	private async _resolveAuthenticationInteractively(protectedResources: readonly ProtectedResourceMetadata[]): Promise<boolean> {
+	private async _resolveAuthenticationInteractively(provider: string, protectedResources: readonly ProtectedResourceMetadata[]): Promise<boolean> {
+		if (provider === REACH_CHAT_PROVIDER_ID) {
+			const generation = this._authenticationGeneration;
+			if (isWeb || !this._isLocalAgentHost || !this._isAuthenticationCurrent(generation) || protectedResources.length !== 1 || protectedResources[0].resource !== REACH_ACCOUNT_ORIGIN) {
+				return false;
+			}
+			const connected = await this._commandService.executeCommand<boolean>('workbench.action.chat.connectReach');
+			return connected === true && this._isAuthenticationCurrent(generation);
+		}
 		return this._resolveAuthenticationInteractivelyForSession(protectedResources);
 	}
 
@@ -662,7 +683,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 	}
 
 	private _authenticateIfCurrent(request: { resource: string; scopes?: readonly string[]; token: string }, generation: number): Promise<unknown> {
-		if (!this._isAuthenticationCurrent(generation)) {
+		if (request.resource === REACH_ACCOUNT_ORIGIN || !this._isAuthenticationCurrent(generation)) {
 			return Promise.reject(new CancellationError());
 		}
 		return this._agentHostService.authenticate(request);

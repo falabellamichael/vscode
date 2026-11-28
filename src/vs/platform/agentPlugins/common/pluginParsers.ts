@@ -576,7 +576,7 @@ export function normalizeMcpServerConfiguration(rawConfig: unknown): IMcpServerC
 	const rawOAuth = candidate['oauth'] && typeof candidate['oauth'] === 'object' ? candidate['oauth'] as Record<string, unknown> : undefined;
 	const oauthClientId = (typeof rawOAuth?.['clientId'] === 'string' ? rawOAuth['clientId'] : undefined)
 		?? (typeof candidate['oauthClientId'] === 'string' ? candidate['oauthClientId'] : undefined);
-	const oauth = oauthClientId ? { clientId: oauthClientId } : undefined;
+	const oauth = oauthClientId ? { clientId: oauthClientId, ...(rawOAuth?.['useHttpsCallback'] === true ? { useHttpsCallback: true } : {}) } : undefined;
 	const dev = candidate['dev'] && typeof candidate['dev'] === 'object' ? candidate['dev'] as IMcpStdioServerConfiguration['dev'] : undefined;
 
 	if (type === 'ws') {

@@ -4,15 +4,19 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Event } from '../../../../../base/common/event.js';
-import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../../base/common/network.js';
+import { singlePagePager } from '../../../../../base/common/paging.js';
+import { isWeb } from '../../../../../base/common/platform.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
-import { ILocalExtension } from '../../../../../platform/extensionManagement/common/extensionManagement.js';
+import { ExtensionGalleryResourceType, IExtensionGalleryManifest, IExtensionGalleryManifestService } from '../../../../../platform/extensionManagement/common/extensionGalleryManifest.js';
+import { IExtensionGalleryService, IGalleryExtension, ILocalExtension, IQueryOptions } from '../../../../../platform/extensionManagement/common/extensionManagement.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
@@ -65,6 +69,15 @@ suite('Signal-C Marketplace', () => {
 		return { fileService, extensionsWorkbenchService, downloadService, logService, cacheHome, installs, downloads, installed };
 	}
 
+	function createWidget(services: ReturnType<typeof createServices>, endpoint?: string, gallery = new class extends mock<IExtensionGalleryService>() { }(), workbenchService: IExtensionsWorkbenchService = services.extensionsWorkbenchService) {
+		const manifest = new class extends mock<IExtensionGalleryManifestService>() {
+			override async getExtensionGalleryManifest(): Promise<IExtensionGalleryManifest | null> {
+				return endpoint ? { version: '1', resources: [{ type: ExtensionGalleryResourceType.ExtensionQueryService, id: endpoint }], capabilities: { extensionQuery: {} } } : null;
+			}
+		}();
+		return store.add(new SignalCExtensionsMarketplace(document.createElement('div'), { showSearch: false, enableInAgents: true }, workbenchService, new class extends mock<IInstantiationService>() { }(), services.fileService, logService, new class extends mock<IOpenerService>() { }(), new class extends mock<IContextViewService>() { }(), manifest, gallery));
+	}
+
 	test('catalog pins distinct released extensions to HTTPS GitHub assets and SHA-256 digests', () => {
 		assert.strictEqual(new Set(signalCExtensionCatalog.map(entry => entry.id)).size, signalCExtensionCatalog.length);
 		assert.strictEqual(signalCExtensionCatalog.length, 3);
@@ -109,13 +122,8 @@ suite('Signal-C Marketplace', () => {
 
 	test('renders our catalog without an external gallery and filters visible listings', async () => {
 		const services = createServices();
-		const container = document.createElement('div');
-		document.body.appendChild(container);
-		store.add(toDisposable(() => container.remove()));
-		const instantiation = new class extends mock<IInstantiationService>() { }();
-		const opener = new class extends mock<IOpenerService>() { }();
-		const contextView = new class extends mock<IContextViewService>() { }();
-		const widget = store.add(new SignalCExtensionsMarketplace(container, { showSearch: false, enableInAgents: true }, services.extensionsWorkbenchService, instantiation, services.fileService, logService, opener, contextView));
+		const widget = createWidget(services);
+		const container = widget.element;
 		await services.extensionsWorkbenchService.whenInitialized;
 		const rows = () => Array.from(container.querySelectorAll<HTMLElement>('.signal-c-extension-listing')).filter(row => !row.hidden);
 		assert.strictEqual(rows().length, 3);
@@ -130,12 +138,78 @@ suite('Signal-C Marketplace', () => {
 	test('a newer installed extension is recognized and never offered a downgrade', async () => {
 		const services = createServices('abc', undefined, '9.0.0');
 		services.extensionsWorkbenchService.local.push(services.installed);
-		const container = document.createElement('div');
-		const widget = store.add(new SignalCExtensionsMarketplace(container, { showSearch: false, enableInAgents: true }, services.extensionsWorkbenchService, new class extends mock<IInstantiationService>() { }(), services.fileService, logService, new class extends mock<IOpenerService>() { }(), new class extends mock<IContextViewService>() { }()));
+		const widget = createWidget(services);
 		await services.extensionsWorkbenchService.whenInitialized;
 		const button = widget.element.querySelector<HTMLElement>('.monaco-button');
-		assert.strictEqual(button?.textContent, 'Installed');
+		const label = isWeb ? 'Desktop Only' : 'Installed';
+		assert.strictEqual(button?.textContent, label);
 		assert.strictEqual(button?.getAttribute('aria-disabled'), 'true');
-		assert.ok(button?.getAttribute('aria-label')?.startsWith('Installed:'));
+		assert.ok(button?.getAttribute('aria-label')?.startsWith(label + ':'));
+	});
+
+	test('shows private gallery results under the active search and installs by ID', async () => {
+		const services = createServices();
+		const id = 'fixture.knowledge-graph';
+		const extension = new class extends mock<IGalleryExtension>() {
+			override identifier = { id, uuid: 'fixture' };
+			override private = true;
+			override displayName = 'Knowledge Graph';
+			override version = '1.2.3';
+			override tags = ['index', 'signal-c'];
+			override assets = new class extends mock<IGalleryExtension['assets']>() { }();
+		}();
+		const result = new DeferredPromise<IGalleryExtension[]>();
+		const gallery = new class extends mock<IExtensionGalleryService>() {
+			override async query(options: IQueryOptions) {
+				assert.deepStrictEqual(options, { text: 'tag:signal-c' });
+				return singlePagePager(await result.p);
+			}
+		}();
+		const installs: unknown[] = [];
+		const workbench = new class extends mock<IExtensionsWorkbenchService>() {
+			override local = [];
+			override onChange = Event.None;
+			override whenInitialized = Promise.resolve();
+			override async install(arg: string | URI | IExtension, options?: { enable?: boolean }) {
+				installs.push([arg, options]);
+				return services.installed;
+			}
+		}();
+		const widget = createWidget(services, 'http://127.0.0.1:47831/extensionquery', gallery, workbench);
+		widget.setQuery('INDEX knowledge');
+		const publicExtension = new class extends mock<IGalleryExtension>() {
+			override identifier = { id: 'fixture.another-knowledge-graph', uuid: 'public' };
+			override private = false;
+		}();
+		await result.complete([extension, publicExtension, extension]);
+		await timeout(0);
+		const rows = Array.from(widget.element.querySelectorAll<HTMLElement>('.signal-c-extension-listing')).filter(row => !row.hidden);
+		assert.strictEqual(widget.element.querySelectorAll('.signal-c-extension-listing').length, 4);
+		assert.strictEqual(rows.length, 1);
+		assert.ok(rows[0].textContent?.includes(id + ' · v1.2.3'));
+		const button = rows[0].querySelector<HTMLElement>('.monaco-button')!;
+		button.click();
+		assert.deepStrictEqual(installs, isWeb ? [] : [[id, { enable: true }]]);
+	});
+
+	test('does not query an external registry or append local results after disposal', async () => {
+		const services = createServices();
+		const pending = new DeferredPromise<IGalleryExtension[]>();
+		const queries: CancellationToken[] = [];
+		const gallery = new class extends mock<IExtensionGalleryService>() {
+			override async query(_options: object, token: CancellationToken) {
+				queries.push(token);
+				return singlePagePager(await pending.p);
+			}
+		}();
+		createWidget(services, 'https://registry.example/extensionquery', gallery);
+		const widget = createWidget(services, 'http://localhost:47831/extensionquery', gallery);
+		await timeout(0);
+		assert.strictEqual(queries.length, 1);
+		widget.dispose();
+		assert.ok(queries[0].isCancellationRequested);
+		await pending.complete([new class extends mock<IGalleryExtension>() { }()]);
+		await timeout(0);
+		assert.strictEqual(widget.element.querySelectorAll('.signal-c-extension-listing').length, 3);
 	});
 });

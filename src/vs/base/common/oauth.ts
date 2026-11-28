@@ -874,7 +874,8 @@ export function isAuthorizationDynamicClientRegistrationResponse(obj: unknown): 
 		return false;
 	}
 	const response = obj as IAuthorizationDynamicClientRegistrationResponse;
-	return response.client_id !== undefined;
+	return typeof response.client_id === 'string' && !!response.client_id
+		&& (response.token_endpoint_auth_method === undefined || typeof response.token_endpoint_auth_method === 'string');
 }
 
 export function isAuthorizationAuthorizeResponse(obj: unknown): obj is IAuthorizationAuthorizeResponse {
@@ -944,62 +945,102 @@ const grantTypesSupported = ['authorization_code', 'refresh_token', 'urn:ietf:pa
  * the spec and require an exact match.
  */
 export const DEFAULT_AUTH_FLOW_PORT = 33418;
-export async function fetchDynamicRegistration(serverMetadata: IAuthorizationServerMetadata, clientName: string, scopes?: string[]): Promise<IAuthorizationDynamicClientRegistrationResponse> {
-	if (!serverMetadata.registration_endpoint) {
+
+export function isSignalCOAuthScheme(scheme: string | undefined): boolean {
+	return scheme === 'signal-c' || (typeof scheme === 'string' && /^signal-c-preview-[a-f0-9]{16}$/.test(scheme));
+}
+
+/** Only the product can supply the first-party callback. MCP configurations select the flow. */
+export function getSignalCOAuthRedirectUri(product: { readonly urlProtocol: string; readonly signalCOAuthRedirectUri?: string }): string | undefined {
+	const value = product.signalCOAuthRedirectUri;
+	if (product.urlProtocol !== 'signal-c' || typeof value !== 'string' || !URL.canParse(value)) {
+		return undefined;
+	}
+	const uri = new URL(value);
+	return uri.protocol === 'https:' && uri.href === `${uri.origin}${uri.pathname}` ? uri.href : undefined;
+}
+
+export async function fetchDynamicRegistration(serverMetadata: IAuthorizationServerMetadata, clientName: string, scopes?: string[], appUriScheme?: string): Promise<IAuthorizationDynamicClientRegistrationResponse> {
+	const registrationEndpoint = serverMetadata.registration_endpoint;
+	if (!registrationEndpoint) {
 		throw new Error('Server does not support dynamic registration');
 	}
 
+	const signalC = isSignalCOAuthScheme(appUriScheme);
+	const desktopRedirectUris = ['http://127.0.0.1/', `http://127.0.0.1:${DEFAULT_AUTH_FLOW_PORT}/`];
 	const requestBody: IAuthorizationDynamicClientRegistrationRequest = {
 		client_name: clientName,
-		client_uri: 'https://code.visualstudio.com',
+		client_uri: signalC ? 'https://github.com/falabellamichael/vscode' : 'https://code.visualstudio.com',
 		grant_types: serverMetadata.grant_types_supported
 			? serverMetadata.grant_types_supported.filter(gt => grantTypesSupported.includes(gt))
 			: grantTypesSupported,
 		response_types: ['code'],
-		redirect_uris: [
-			'https://insiders.vscode.dev/redirect',
-			'https://vscode.dev/redirect',
-			'http://127.0.0.1/',
-			// Added these for any server that might do
-			// only exact match on the redirect URI even
-			// though the spec says it should not care
-			// about the port.
-			`http://127.0.0.1:${DEFAULT_AUTH_FLOW_PORT}/`
-		],
+		redirect_uris: signalC ? desktopRedirectUris : ['https://insiders.vscode.dev/redirect', 'https://vscode.dev/redirect', ...desktopRedirectUris],
 		scope: scopes?.join(AUTH_SCOPE_SEPARATOR),
-		token_endpoint_auth_method: 'none',
 		application_type: 'native'
 	};
 
-	const response = await fetch(serverMetadata.registration_endpoint, {
+	const supportedMethods = serverMetadata.token_endpoint_auth_methods_supported;
+	const secretMethod = Array.isArray(supportedMethods)
+		? ['client_secret_post', 'client_secret_basic'].find(method => supportedMethods.includes(method))
+		: undefined;
+	const tokenEndpoint = serverMetadata.token_endpoint;
+	const secureRegistration = new URL(registrationEndpoint).protocol === 'https:';
+	const secureTokenExchange = !!tokenEndpoint && new URL(tokenEndpoint).protocol === 'https:';
+	const register = (method: string) => fetch(registrationEndpoint, {
 		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json'
-		},
-		body: JSON.stringify(requestBody)
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ ...requestBody, token_endpoint_auth_method: method }),
+		...(method !== 'none' ? { redirect: 'error' } : {}),
 	});
 
-	if (!response.ok) {
+	let method = 'none';
+	let response = await register(method);
+	while (!response.ok) {
 		const result = await response.text();
-		let errorDetails: string = result;
-
+		let registrationError: IAuthorizationRegistrationErrorResponse | undefined;
 		try {
 			const errorResponse = JSON.parse(result);
 			if (isAuthorizationRegistrationErrorResponse(errorResponse)) {
-				errorDetails = `${errorResponse.error}${errorResponse.error_description ? `: ${errorResponse.error_description}` : ''}`;
+				registrationError = errorResponse;
 			}
 		} catch {
-			// JSON parsing failed, use raw text
+			// This server did not send an OAuth registration error.
 		}
 
-		throw new Error(`Registration to ${serverMetadata.registration_endpoint} failed: ${errorDetails}`);
+		// Some providers accept public clients even when their issuer metadata omits `none`.
+		// Retry only when registration explicitly rejects this authentication method.
+		if (method === 'none' && secretMethod && response.status === 400 &&
+			(registrationError?.error === 'unsupported_token_endpoint_auth_method' ||
+				(registrationError?.error === AuthorizationRegistrationErrorType.InvalidClientMetadata && /auth(?:entication)?[\s_-]*method|public[\s_-]*client/i.test(registrationError.error_description ?? '')))) {
+			if (!secureRegistration || !secureTokenExchange) {
+				throw new Error('OAuth client secret registration requires HTTPS registration and token endpoints');
+			}
+			method = secretMethod;
+			response = await register(method);
+			continue;
+		}
+
+		const errorDetails = method !== 'none' ? `HTTP ${response.status}`
+			: registrationError ? `${registrationError.error}${registrationError.error_description ? `: ${registrationError.error_description}` : ''}` : result;
+		throw new Error(`Registration to ${registrationEndpoint} failed: ${errorDetails}`);
 	}
 
 	const registration = await response.json();
-	if (isAuthorizationDynamicClientRegistrationResponse(registration)) {
-		return registration;
+	if (!isAuthorizationDynamicClientRegistrationResponse(registration)) {
+		throw new Error('Invalid authorization dynamic client registration response');
 	}
-	throw new Error(`Invalid authorization dynamic client registration response: ${JSON.stringify(registration)}`);
+	const registeredMethod = registration.token_endpoint_auth_method ?? (method === 'none' ? undefined : method);
+	if (registeredMethod !== undefined && registeredMethod !== 'none' && registeredMethod !== 'client_secret_basic' && registeredMethod !== 'client_secret_post') {
+		throw new Error('The OAuth provider registered this client with an unsupported token authentication method');
+	}
+	if ((registeredMethod === 'client_secret_basic' || registeredMethod === 'client_secret_post') && (typeof registration.client_secret !== 'string' || !registration.client_secret)) {
+		throw new Error('The registered OAuth client requires a client secret');
+	}
+	if (registration.client_secret && registeredMethod !== 'none' && (!secureRegistration || !secureTokenExchange)) {
+		throw new Error('OAuth client secret registration requires HTTPS registration and token endpoints');
+	}
+	return registeredMethod !== undefined ? { ...registration, token_endpoint_auth_method: registeredMethod } : registration;
 }
 
 export interface IAuthenticationChallenge {

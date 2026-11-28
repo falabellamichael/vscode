@@ -102,7 +102,7 @@ export class McpGatewaySession extends Disposable {
 
 	private _handleOutgoingMessage(message: JsonRpcMessage): void {
 		if (isJsonRpcResponse(message)) {
-			this._logService.debug(`[McpGateway][session ${this.id}] --> response: ${JSON.stringify(message)}`);
+			this._logService.debug(`[McpGateway][session ${this.id}] --> response`);
 			return;
 		}
 

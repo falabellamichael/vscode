@@ -8,6 +8,7 @@ import { constObservable, IObservable, ITransaction } from '../../../../base/com
 import { MenuId } from '../../../../platform/actions/common/actions.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import type { Parts } from '../../../services/layout/browser/layoutService.js';
 
 /**
  * How a custom view renders the actions in its header: as an icon toolbar or as
@@ -21,6 +22,12 @@ export interface ICustomViewActions {
 	readonly menuId: MenuId;
 }
 
+/** The menus of a custom view's right-edge activity bar: its entries, and the context menu shown after their own actions. */
+export interface ICustomViewActivityBar {
+	readonly menuId: MenuId;
+	readonly contextMenuId: MenuId;
+}
+
 export interface ICustomViewDescriptor {
 
 	/** Stable id, used by `ICustomViewService.showCustomView`. */
@@ -29,6 +36,20 @@ export interface ICustomViewDescriptor {
 	readonly ctor: SyncDescriptor<AbstractCustomView>;
 
 	readonly actions?: ICustomViewActions;
+
+	/**
+	 * The parts the view covers while it is shown. They keep their desired
+	 * visibility but are not rendered until the view hides, as before. A part
+	 * left out — such as the editor part — keeps rendering beside the view and
+	 * can be revealed while it is shown.
+	 */
+	readonly coveredParts?: readonly Parts[];
+
+	/**
+	 * An icon-only activity bar docked at the right edge of the view's chrome,
+	 * like the Session Activity Bar of a chat, showing the entries of its menu.
+	 */
+	readonly activityBar?: ICustomViewActivityBar;
 
 	/** Handle an unparameterized New Session action without leaving this view. */
 	readonly openNewSession?: () => Promise<void> | undefined;

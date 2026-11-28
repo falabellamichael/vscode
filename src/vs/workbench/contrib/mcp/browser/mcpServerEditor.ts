@@ -571,6 +571,8 @@ export class McpServerEditor extends EditorPane {
 
 					/* prevent scroll-to-top button from blocking the body text */
 					body {
+						background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+						color: var(--vscode-foreground);
 						padding-bottom: 75px;
 					}
 

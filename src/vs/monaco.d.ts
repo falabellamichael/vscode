@@ -2654,6 +2654,7 @@ declare namespace monaco.editor {
 	export interface IDiffEditorViewState {
 		original: ICodeEditorViewState | null;
 		modified: ICodeEditorViewState | null;
+		focusedSide?: 'original' | 'modified';
 		modelState?: unknown;
 	}
 
@@ -6551,6 +6552,11 @@ declare namespace monaco.editor {
 		 * Get the `modified` editor.
 		 */
 		getModifiedEditor(): ICodeEditor;
+		/**
+		 * Get the focused side, retaining that side after focus leaves the diff.
+		 * Defaults to the modified editor for a new comparison or an inline diff.
+		 */
+		getLastFocusedEditor(): ICodeEditor;
 		/**
 		 * Get the computed diff information.
 		 */

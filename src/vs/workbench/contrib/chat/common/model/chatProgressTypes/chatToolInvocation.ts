@@ -432,6 +432,9 @@ export class ChatToolInvocation implements IChatToolInvocation {
 		}
 		if (result?.toolResultMessage) {
 			this.pastTenseMessage = result.toolResultMessage;
+		} else if (result?.toolResultError) {
+			// A prepared past-tense label describes the expected success (for example, "Created index.html").
+			this.pastTenseMessage = typeof result.toolResultError === 'string' ? result.toolResultError : localize('toolExecutionFailed', "Tool execution failed");
 		} else if (this._progress.get().message) {
 			this.pastTenseMessage = this._progress.get().message;
 		}

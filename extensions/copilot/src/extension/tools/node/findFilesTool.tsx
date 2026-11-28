@@ -23,7 +23,7 @@ import { IBuildPromptContext } from '../../prompt/common/intents';
 import { renderPromptElementJSON } from '../../prompts/node/base/promptRenderer';
 import { ToolName } from '../common/toolNames';
 import { CopilotToolMode, ICopilotTool, ToolRegistry } from '../common/toolsRegistry';
-import { checkCancellation, inputGlobToPattern, patternContainsWorkspaceFolderPath } from './toolUtils';
+import { checkCancellation, getOptionalToolEndpoint, inputGlobToPattern, patternContainsWorkspaceFolderPath } from './toolUtils';
 
 export interface IFindFilesToolParams {
 	query: string;
@@ -51,14 +51,14 @@ export class FindFilesTool implements ICopilotTool<IFindFilesToolParams> {
 			throw new Error('The property "path" is not supported');
 		}
 
-		const endpoint = options.model && (await this.endpointProvider.getChatEndpoint(options.model));
+		const endpoint = await getOptionalToolEndpoint(options, this.endpointProvider);
 		const modelFamily = endpoint?.family;
 
 		// The input _should_ be a pattern matching inside a workspace, folder, but sometimes we get absolute paths, so try to resolve them
 		const workingDir = new WorkingDirectory(options.workingDirectory, this.workspaceService);
 		const globResult = inputGlobToPattern(options.input.query, workingDir, modelFamily);
 
-		void this.sendSearchToolTelemetry(options, globResult.folderName);
+		this.sendSearchToolTelemetry(endpoint?.model, options, globResult.folderName);
 
 		// try find text with a timeout of 20s
 		const timeoutInMs = 20_000;
@@ -88,8 +88,7 @@ export class FindFilesTool implements ICopilotTool<IFindFilesToolParams> {
 		return result;
 	}
 
-	private async sendSearchToolTelemetry(options: vscode.LanguageModelToolInvocationOptions<IFindFilesToolParams>, folderName: string | undefined): Promise<void> {
-		const model = options.model && (await this.endpointProvider.getChatEndpoint(options.model)).model;
+	private sendSearchToolTelemetry(model: string | undefined, options: vscode.LanguageModelToolInvocationOptions<IFindFilesToolParams>, folderName: string | undefined): void {
 		const isMultiRoot = this.workspaceService.getWorkspaceFolders().length > 1;
 		const query = options.input.query;
 		/* __GDPR__

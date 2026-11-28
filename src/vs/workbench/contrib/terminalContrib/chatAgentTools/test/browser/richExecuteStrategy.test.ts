@@ -10,7 +10,8 @@ import { toDisposable } from '../../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
 import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { NullLogService } from '../../../../../../platform/log/common/log.js';
-import type { ITerminalLogService } from '../../../../../../platform/terminal/common/terminal.js';
+import { GeneralShellType, type ITerminalLogService } from '../../../../../../platform/terminal/common/terminal.js';
+import { PromptInputState } from '../../../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
 import { RichExecuteStrategy } from '../../browser/executeStrategy/richExecuteStrategy.js';
 import type { ITerminalInstance } from '../../../../terminal/browser/terminal.js';
 import type { ICommandDetectionCapability } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
@@ -21,6 +22,25 @@ function createLogService(): ITerminalLogService {
 
 suite('RichExecuteStrategy', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('returns an incomplete PowerShell input to the model and clears the pending editor line', async () => {
+		const changed = store.add(new Emitter<void>());
+		const command = 'Write-Output "missing quote';
+		const marker = { line: 0, dispose() { }, onDispose: Event.None };
+		const input = { state: PromptInputState.Input, prefix: command + '\n', suffix: '', continuationPrompt: '>> ', onDidChangeInput: changed.event };
+		const buffer = { baseY: 0, cursorY: 1, getLine: () => ({ translateToString: () => '>>' }) };
+		let interrupted = '';
+		const instance = {
+			xtermReadyPromise: Promise.resolve({ raw: { registerMarker: () => marker, buffer: { active: buffer, alternate: {}, onBufferChange: Event.None } } }),
+			shellType: GeneralShellType.PowerShell, onData: Event.None, onDisposed: Event.None, onExit: Event.None,
+			runCommand: () => changed.fire(), sendText: async (text: string) => { interrupted = text; },
+		} as unknown as ITerminalInstance;
+		const detection = { promptInputModel: input, onCommandFinished: Event.None } as unknown as ICommandDetectionCapability;
+		const strategy = store.add(new RichExecuteStrategy(instance, detection, false, new TestConfigurationService(), createLogService()));
+		const result = await strategy.execute(command, CancellationToken.None);
+		strictEqual(result.error, 'incompleteCommand');
+		strictEqual(interrupted, '\x03');
+	});
 
 	test('passes separate command line metadata when running a wrapped command', async () => {
 		const onCommandFinishedEmitter = new Emitter<{ getOutput(): string; exitCode: number }>();

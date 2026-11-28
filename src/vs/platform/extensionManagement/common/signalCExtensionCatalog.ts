@@ -43,10 +43,10 @@ export const signalCExtensionCatalog: readonly ISignalCExtensionListing[] = [
 		id: 'falabella.simpletheme',
 		name: 'SimpleTheme',
 		description: localize('signalC.catalog.theme', "Design and customize editor themes with live color controls, syntax highlighting, and curated presets."),
-		version: '1.0.22',
+		version: '1.0.30',
 		repository: 'SimpleSignal-Theme-Studio',
-		asset: 'simpletheme-1.0.22.vsix',
-		sha256: '52d4a980d245ce2bc135e83379703fcc4a2c723e720bb729303eda31f7df2ff0',
+		asset: 'simpletheme-1.0.30.vsix',
+		sha256: 'eeba21605713acc0e5512c262b01aee481ceb696c430e34d1b937117dc4e15eb',
 		keywords: ['theme', 'studio', 'color', 'appearance', 'syntax'],
 	},
 	{
@@ -69,7 +69,7 @@ export function getSignalCExtensionDownload(listing: ISignalCExtensionListing): 
 	return `${getSignalCExtensionRepository(listing)}/releases/download/v${listing.version}/${listing.asset}`;
 }
 
-export function matchesSignalCExtension(listing: ISignalCExtensionListing, query: string): boolean {
+export function matchesSignalCExtension(listing: Pick<ISignalCExtensionListing, 'id' | 'name' | 'description' | 'repository' | 'keywords'>, query: string): boolean {
 	const text = [listing.id, listing.name, listing.description, listing.repository, ...listing.keywords].join(' ').toLowerCase();
 	return query.toLowerCase().trim().split(/\s+/).every(word => text.includes(word));
 }

@@ -44,6 +44,7 @@ import { ChatInputCanScheduleContext } from '../common/contextkeys.js';
 import { fromStoredChatDraft, toStoredChatDraft } from '../common/newChatDraftState.js';
 import { hasSessionDraftContent, ISavedSessionDraftTarget } from '../common/savedSessionDrafts.js';
 import { captureScheduledChatRequest } from '../common/scheduledChatRequest.js';
+import { withSessionOutputTypeMetadata } from '../../chat/common/sessionOutputType.js';
 import { SESSIONS_SEND_LATER_ENABLED_SETTING } from '../common/sessionConfig.js';
 import { ISessionsManagementService } from '../common/sessionsManagement.js';
 import { ISessionDraftsService } from './sessionDraftsService.js';
@@ -803,21 +804,31 @@ export class ScheduledChatsService extends Disposable implements IScheduledChats
 		const textChanged = text !== original.text;
 		const input = state.input && fromStoredChatDraft(parse(stringify(toStoredChatDraft(state.input))));
 		const retained = original.attachments?.map(attachment => textChanged ? { ...attachment, range: undefined } : attachment);
+		const inputEntries = input ? [...input.attachments, ...(input.sendContext ?? [])] : [];
+		const originalEntries = handoff ? [...handoff.input.attachments, ...(handoff.input.sendContext ?? [])] : [];
 		const attachments = input ? [
 			...(!handoff ? retained ?? [] : []),
-			...await Promise.all(input.attachments.map(async entry => {
-				const originalIndex = handoff?.input.attachments.findIndex(attachment => attachment.id === entry.id) ?? -1;
+			...await Promise.all(inputEntries.map(async entry => {
+				const originalIndex = originalEntries.findIndex(attachment => attachment.id === entry.id);
 				if (originalIndex >= 0 && retained?.[originalIndex]) {
 					return retained[originalIndex];
 				}
-				const captured = await this.captureRequest({ ...input, inputText: text, attachments: [entry] });
+				const captured = await this.captureRequest({ ...input, inputText: text, attachments: [entry], sendContext: [] });
 				return captured.attachments![0];
 			})),
 		] : retained;
-		if (!text.trim() && !attachments?.length) {
+		if (!text.trim() && !(input ? input.attachments.length : attachments?.length)) {
 			throw new Error(localize('scheduledChat.emptyEdit', "Enter a message or keep an attachment before saving."));
 		}
 		const request = { ...original, text, attachments };
+		if (input) {
+			const metadata = withSessionOutputTypeMetadata(original._meta, input.sendContext);
+			if (metadata) {
+				request._meta = metadata;
+			} else {
+				delete request._meta;
+			}
+		}
 		let updatedTarget: { target: ISavedSessionDraftTarget; automationTarget: AutomationTarget } | undefined;
 		if (newSession) {
 			if (newSession.session.providerId !== automation.target.providerId || !this.canSchedule(newSession.session) || newSession.target.requireDevContainer) {
@@ -961,6 +972,7 @@ function captureChatInput(widget: IChatWidget): IChatDraft {
 	return fromStoredChatDraft(parse(stringify(toStoredChatDraft({
 		inputText: widget.getInput(),
 		attachments: widget.input.getAttachedContext().asArray(),
+		sendContext: widget.input.getSendContext?.() ?? [],
 		references: [...getDynamicVariablesForWidget(widget)],
 	}))));
 }

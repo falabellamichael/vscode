@@ -8,8 +8,9 @@ import { decodeBase64, VSBuffer } from '../../../../../base/common/buffer.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { Range } from '../../../../../editor/common/core/range.js';
-import { MessageAttachmentKind } from '../../../../../platform/agentHost/common/state/protocol/state.js';
+import { MessageAttachmentKind, MessageKind } from '../../../../../platform/agentHost/common/state/protocol/state.js';
 import { captureScheduledChatRequest, parseScheduledChatTime } from '../../common/scheduledChatRequest.js';
+import { SESSION_OUTPUT_TYPE_META_KEY } from '../../../chat/common/sessionOutputType.js';
 
 suite('Scheduled chat request', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -44,6 +45,20 @@ suite('Scheduled chat request', () => {
 				{ type: MessageAttachmentKind.Resource, content: uri.toString(), range: { start: { line: 0, character: 7 }, end: { line: 0, character: 9 } } },
 				{ type: MessageAttachmentKind.EmbeddedResource, content: [1, 2, 3], range: undefined },
 			],
+		});
+	});
+
+	test('captures hidden send context as model context without showing it in the draft', async () => {
+		const message = await captureScheduledChatRequest({
+			inputText: 'Create it',
+			attachments: [],
+			sendContext: [{ kind: 'promptText', id: 'session-output:website', name: 'Requested output', value: 'Build a website.', modelDescription: 'Requested deliverable', automaticallyAdded: true }],
+		}, async () => { throw new Error('Unexpected selection read'); }, async () => { throw new Error('Unexpected file read'); });
+		assert.deepStrictEqual(message, {
+			text: 'Create it',
+			origin: { kind: MessageKind.User },
+			attachments: [{ type: MessageAttachmentKind.Simple, label: 'Requested output', modelRepresentation: 'Build a website.' }],
+			_meta: { [SESSION_OUTPUT_TYPE_META_KEY]: 'website' },
 		});
 	});
 

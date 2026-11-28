@@ -18,6 +18,11 @@ export interface IChatDraft {
 	readonly inputText: string;
 	readonly attachments: readonly IChatRequestVariableEntry[];
 	/**
+	 * Context to send with the draft's request without showing it in its input,
+	 * such as automatically added instructions derived from its composition.
+	 */
+	readonly sendContext?: readonly IChatRequestVariableEntry[];
+	/**
 	 * The references of the input text, by the id of what they stand for and
 	 * their range in the text. They tell apart mentions of attachments that
 	 * share a name, which inline attachment pills are saved as.
@@ -32,7 +37,7 @@ export class UnsupportedChatDraftAttachmentError extends Error {
 }
 
 export function serializeChatDraft(draft: IChatDraft, getTextModel?: (resource: URI) => ITextModel | null): IAgentsWindowDraft {
-	const attachments = draft.attachments.map(attachment => {
+	const serializeEntry = (attachment: IChatRequestVariableEntry) => {
 		const context = isStringVariableEntry(attachment)
 			? attachment
 			: isImplicitVariableEntry(attachment) && isStringImplicitContextValue(attachment.value)
@@ -68,8 +73,12 @@ export function serializeChatDraft(draft: IChatDraft, getTextModel?: (resource: 
 			};
 		}
 		return IChatRequestVariableEntry.toExport(attachment);
-	});
-	return { inputText: draft.inputText, attachments: stringify(attachments) };
+	};
+	return {
+		inputText: draft.inputText,
+		attachments: stringify(draft.attachments.map(serializeEntry)),
+		...(draft.sendContext ? { sendContext: stringify(draft.sendContext.map(serializeEntry)) } : {}),
+	};
 }
 
 /**
@@ -81,7 +90,7 @@ export function remapChatDraftResources(draft: IChatDraft, mapResource: (resourc
 	// Mentions of attachments refer to them by their ids.
 	const ids = new Map<string, string>();
 	let changed = false;
-	const attachments = draft.attachments.map(attachment => {
+	const remapEntry = (attachment: IChatRequestVariableEntry, recordId: boolean) => {
 		const remapped = remapResourceValue(attachment.value, mapResource);
 		const uri = hasKey(attachment, { uri: true }) && URI.isUri(attachment.uri) ? mapResource(attachment.uri) : undefined;
 		// An image kept as bytes and pasted code record the resource they came from in their references.
@@ -93,9 +102,13 @@ export function remapChatDraftResources(draft: IChatDraft, mapResource: (resourc
 		changed = true;
 		const source = remapped ?? contentReferences ?? kindResources;
 		const id = source ? remapResourceId(attachment.id, source) : attachment.id;
-		ids.set(attachment.id, id);
+		if (recordId) {
+			ids.set(attachment.id, id);
+		}
 		return Object.assign({ ...attachment, id }, remapped ? { value: remapped.value } : {}, uri ? { uri } : {}, { ...(contentReferences && { references: contentReferences.references }), ...kindResources?.changes });
-	});
+	};
+	const attachments = draft.attachments.map(attachment => remapEntry(attachment, true));
+	const sendContext = draft.sendContext?.map(attachment => remapEntry(attachment, false));
 	const references = draft.references?.map(reference => {
 		const remapped = remapResourceValue(reference.data, mapResource);
 		const id = ids.get(reference.id) ?? (remapped ? remapResourceId(reference.id, remapped) : reference.id);
@@ -105,7 +118,7 @@ export function remapChatDraftResources(draft: IChatDraft, mapResource: (resourc
 		changed = true;
 		return { ...reference, id, ...(remapped ? { data: remapped.value } : {}) };
 	});
-	return changed ? { ...draft, attachments, ...(references ? { references } : {}) } : draft;
+	return changed ? { ...draft, attachments, ...(sendContext ? { sendContext } : {}), ...(references ? { references } : {}) } : draft;
 }
 
 function remapResourceValue(value: unknown, mapResource: (resource: URI) => URI | undefined): { readonly from: URI; readonly to: URI; readonly value: URI | Location } | undefined {
@@ -168,5 +181,13 @@ export function reviveChatDraft(draft: IAgentsWindowDraft): IChatDraft {
 	if (!Array.isArray(attachments) || !attachments.every(isChatRequestVariableEntry)) {
 		throw new Error('Invalid chat draft attachments.');
 	}
-	return { inputText: draft.inputText, attachments: attachments.map(IChatRequestVariableEntry.fromExport) };
+	const sendContext: unknown = draft.sendContext === undefined ? undefined : parse(draft.sendContext);
+	if (sendContext !== undefined && (!Array.isArray(sendContext) || !sendContext.every(isChatRequestVariableEntry))) {
+		throw new Error('Invalid chat draft send context.');
+	}
+	return {
+		inputText: draft.inputText,
+		attachments: attachments.map(IChatRequestVariableEntry.fromExport),
+		...(sendContext ? { sendContext: sendContext.map(IChatRequestVariableEntry.fromExport) } : {}),
+	};
 }

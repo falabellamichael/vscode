@@ -52,8 +52,9 @@ import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { defaultButtonStyles, getInputBoxStyle, getListStyles, getSelectBoxStyles } from '../../../../platform/theme/browser/defaultStyles.js';
-import { editorBackground, foreground } from '../../../../platform/theme/common/colorRegistry.js';
+import { foreground } from '../../../../platform/theme/common/colorRegistry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
+import { PANEL_BACKGROUND } from '../../../common/theme.js';
 import { IUserDataProfilesService } from '../../../../platform/userDataProfile/common/userDataProfile.js';
 import { getIgnoredSettings } from '../../../../platform/userDataSync/common/settingsMerge.js';
 import { IUserDataSyncEnablementService, getDefaultIgnoredSettings } from '../../../../platform/userDataSync/common/userDataSync.js';
@@ -2716,21 +2717,21 @@ export class SettingsTree extends WorkbenchObjectTree<SettingsTreeElement> {
 		this.getHTMLElement().classList.add('settings-editor-tree');
 
 		this.style(getListStyles({
-			listBackground: editorBackground,
-			listActiveSelectionBackground: editorBackground,
+			listBackground: PANEL_BACKGROUND,
+			listActiveSelectionBackground: PANEL_BACKGROUND,
 			listActiveSelectionForeground: foreground,
-			listFocusAndSelectionBackground: editorBackground,
+			listFocusAndSelectionBackground: PANEL_BACKGROUND,
 			listFocusAndSelectionForeground: foreground,
-			listFocusBackground: editorBackground,
+			listFocusBackground: PANEL_BACKGROUND,
 			listFocusForeground: foreground,
 			listHoverForeground: foreground,
-			listHoverBackground: editorBackground,
-			listHoverOutline: editorBackground,
-			listFocusOutline: editorBackground,
-			listInactiveSelectionBackground: editorBackground,
+			listHoverBackground: PANEL_BACKGROUND,
+			listHoverOutline: PANEL_BACKGROUND,
+			listFocusOutline: PANEL_BACKGROUND,
+			listInactiveSelectionBackground: PANEL_BACKGROUND,
 			listInactiveSelectionForeground: foreground,
-			listInactiveFocusBackground: editorBackground,
-			listInactiveFocusOutline: editorBackground,
+			listInactiveFocusBackground: PANEL_BACKGROUND,
+			listInactiveFocusOutline: PANEL_BACKGROUND,
 			treeIndentGuidesStroke: undefined,
 			treeInactiveIndentGuidesStroke: undefined,
 		}));

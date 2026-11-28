@@ -48,6 +48,13 @@ suite('MCP gateway channel server selection', () => {
 		}
 	});
 
+	test('keeps explicitly shared connections off gateways created by other clients without a selection', async () => {
+		const f = fixture();
+		await f.channel.call('editor', 'createGateway');
+		f.changed.fire([...all, { id: 'mail', label: 'Mail', requiresExplicitSelection: true }]);
+		assert.deepStrictEqual(f.invoker.listServers(), all);
+	});
+
 	test('rejects malformed selections instead of exposing all servers', async () => {
 		const f = fixture();
 		for (const serverIds of [null, 'workspace-a', [42]]) {

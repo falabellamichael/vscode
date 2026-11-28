@@ -507,6 +507,8 @@ export class AgentPluginEditor extends EditorPane {
 					${DEFAULT_MARKDOWN_STYLES}
 
 					body {
+						background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+						color: var(--vscode-foreground);
 						padding-bottom: 75px;
 					}
 

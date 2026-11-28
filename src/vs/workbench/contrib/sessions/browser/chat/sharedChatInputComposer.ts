@@ -15,7 +15,7 @@ import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { equals } from '../../../../../base/common/objects.js';
 import { disposableTimeout } from '../../../../../base/common/async.js';
-import { autorun, constObservable, derived, IObservable, IReader, observableValue, transaction } from '../../../../../base/common/observable.js';
+import { autorun, constObservable, derived, IObservable, IReader, ISettableObservable, observableValue, transaction } from '../../../../../base/common/observable.js';
 import { isEqual } from '../../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -40,6 +40,7 @@ import { ChatDynamicVariableModel } from '../../../chat/browser/attachments/chat
 import { getDynamicVariablesForWidget, getSelectedToolAndToolSetsForWidget } from '../../../chat/browser/attachments/chatVariables.js';
 import { ChatSubmitAction, createChatInputToolbarContext, IChatExecuteActionContext } from '../../../chat/browser/actions/chatExecuteActions.js';
 import { IChatWidget } from '../../../chat/browser/chat.js';
+import { cancelDictationForEditor } from '../../../chat/browser/speechToText/dictationSession.js';
 import { compactCodiconsIn } from '../../../chat/browser/chatIcons.js';
 import { ChatWidget } from '../../../chat/browser/widget/chatWidget.js';
 import { ChatInputNoticeHost } from '../../../chat/browser/widget/input/chatInputNoticeHost.js';
@@ -79,6 +80,8 @@ import { NewSessionPromptOptionsPresenter } from './newSessionPromptOptions.js';
 import { NewChatUserInteraction } from './newChatUserInteraction.js';
 import { hasSendableModelSelection } from './sessionModelPickerState.js';
 import { ISessionModelSelection, SessionModelSelection } from './sessionModelSelection.js';
+import { readSessionOutputType, storeSessionOutputType, toSessionOutputPromptEntry } from '../../../chat/browser/widget/input/sessionOutputTypePicker.js';
+import { readSessionOutputTypeFromSendContext, type SessionOutputKind } from '../../../chat/common/sessionOutputType.js';
 import { SessionReferenceCompletions } from './sessionReferenceCompletions.js';
 import { SessionTypePicker } from './sessionTypePicker.js';
 import { ChatInputPickerResponsiveLayout } from '../../../chat/browser/widget/input/chatInputPickerResponsiveLayout.js';
@@ -133,6 +136,7 @@ interface IClientSlashCommand {
 /** The input editor's padding, matching the composer's text inset and minimum height. */
 const COMPOSER_INPUT_EDITOR_PADDING = { top: 8, bottom: 2 };
 const HOST_SLASH_COMMAND_WORD = /\/[\w-]*/g;
+const HOST_MENTION_WORD = new RegExp(String.raw`@[\p{L}\p{N}_.-]*`, 'gu');
 
 /** A status indicator in the composer's controls row; icon-only items use the compact control box. */
 class ComposerStatusActionViewItem extends MenuEntryActionViewItem {
@@ -215,6 +219,7 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 	private readonly _newChatModelPickerService = new NewChatModelPickerService(() => this.focus(), text => this._widget?.input.startPromptWith(text));
 	private readonly _scopedInstantiationService: IInstantiationService;
 	private readonly _canSendRequest: IObservable<boolean>;
+	private readonly _outputType: ISettableObservable<SessionOutputKind>;
 	private readonly _promptOptions: NewSessionPromptOptionsPresenter;
 
 	private _widget: ChatWidget | undefined;
@@ -296,6 +301,7 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 			}
 			return this.options.canSendRequest.read(reader) && hasSendableModelSelection(this._modelSelection.state.read(reader));
 		});
+		this._outputType = observableValue(this, readSessionOutputType(this.storageService));
 		// Created before the input's instantiation services so it is disposed first:
 		// disposing it restores the input text.
 		this._promptOptions = this._register(this.instantiationService.createInstance(NewSessionPromptOptionsPresenter, () => this.focus()));
@@ -349,6 +355,10 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 				renderChatPet: this.options.renderChatPet,
 				renderInputOnTop: true,
 				renderSecondaryToolbar: false,
+				outputTypePicker: this.options.textOnly ? undefined : {
+					selected: this._outputType,
+					onSelect: kind => this.setOutputType(kind),
+				},
 				// Status indicators share the composer's controls row instead.
 				renderStatusToolbar: false,
 				renderGettingStartedTip: false,
@@ -428,8 +438,8 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 		}));
 		if (!this.options.textOnly) {
 			this._register(this.instantiationService.createInstance(SessionReferenceCompletions, widget, () => this.options.session.get()));
-		} else if (this.options.slashCommands?.length) {
-			this._registerHostSlashCommands(widget, this.options.slashCommands);
+		} else if (this.options.slashCommands?.length || this.options.mentionCompletions) {
+			this._registerHostInputCompletions(widget, this.options.slashCommands ?? [], this.options.mentionCompletions);
 		}
 		if (this.options.supportsBackground) {
 			SharedChatInputComposer._backgroundComposers.set(widget, this);
@@ -496,16 +506,38 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 		update();
 	}
 
-	private _registerHostSlashCommands(widget: ChatWidget, commands: readonly IComposerSlashCommand[]): void {
+	private _registerHostInputCompletions(widget: ChatWidget, commands: readonly IComposerSlashCommand[], mentionCompletions: INewChatComposerInputOptions['mentionCompletions']): void {
 		const input = widget.inputEditor.getModel();
 		if (!input) { return; }
-		// These commands are executed by this host. Match only its editor and avoid offering other providers' commands.
+		// These completions are interpreted by this host. Match only its editor and avoid offering other providers' items.
 		this._register(this.languageFeaturesService.completionProvider.register({ scheme: input.uri.scheme, pattern: input.uri.fsPath, exclusive: true, hasAccessToAllModels: true }, {
-			_debugDisplayName: 'hostSlashCommands',
-			triggerCharacters: ['/'],
-			provideCompletionItems: (model, position) => {
+			_debugDisplayName: 'hostInputCompletions',
+			triggerCharacters: ['/', '@'],
+			provideCompletionItems: async (model, position) => {
+				if (mentionCompletions) {
+					const mentionRange = computeCompletionRanges(model, position, HOST_MENTION_WORD);
+					if (mentionRange?.varWord?.word.startsWith('@')) {
+						const line = model.getLineContent(position.lineNumber);
+						const before = mentionRange.varWord.startColumn > 1 ? line[mentionRange.varWord.startColumn - 2] : '';
+						if (before && !/[\s([{]/.test(before)) { return undefined; }
+						const cursorOffset = position.column - mentionRange.varWord.startColumn;
+						const query = mentionRange.varWord.word.slice(1, Math.max(1, cursorOffset));
+						const items = await mentionCompletions(query);
+						return {
+							suggestions: items.map((item, index) => ({
+								label: { label: `@${item.label}`, description: item.description },
+								kind: CompletionItemKind.Text,
+								filterText: `@${item.label} ${item.label}`,
+								insertText: item.insertText ?? `@${item.label} `,
+								sortText: String(index).padStart(3, '0'),
+								range: mentionRange.replace,
+							})),
+						};
+					}
+				}
+				if (!commands.length) { return undefined; }
 				const range = computeCompletionRanges(model, position, HOST_SLASH_COMMAND_WORD);
-				if (!range?.varWord || !isEmptyUpToCompletionWord(model, range)) { return; }
+				if (!range?.varWord || !isEmptyUpToCompletionWord(model, range)) { return undefined; }
 				const following = model.getLineContent(position.lineNumber).slice(range.replace.endColumn - 1);
 				return {
 					suggestions: commands.map(({ label, description, acceptsArguments }, index) => ({
@@ -653,6 +685,17 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 		this._widget?.focusInput();
 	}
 
+	get outputType(): SessionOutputKind {
+		return this._outputType?.get() ?? (this.storageService ? readSessionOutputType(this.storageService) : 'auto');
+	}
+
+	setOutputType(kind: SessionOutputKind): void {
+		this._outputType?.set(kind, undefined);
+		if (this.storageService) {
+			storeSessionOutputType(this.storageService, kind);
+		}
+	}
+
 	// #endregion
 
 	// #region Chat model binding
@@ -786,6 +829,11 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 		return this.options.voiceRoutesWhileSessionActive === true;
 	}
 
+	/** Stop speech input before a host replaces the conversation displayed in this editor. */
+	cancelDictation(): void {
+		if (this._widget) { cancelDictationForEditor(this._widget.inputEditor); }
+	}
+
 	get attachments(): readonly IChatRequestVariableEntry[] {
 		return this._widget?.attachmentModel.attachments ?? this._pendingAttachments;
 	}
@@ -815,6 +863,7 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 		if (!widget) {
 			return;
 		}
+		if (this.options.textOnly && text !== widget.getInput()) { this.cancelDictation(); }
 		widget.setInput(text);
 		const model = widget.inputEditor.getModel();
 		if (model) {
@@ -832,13 +881,25 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 		const widget = this._widget;
 		// A host that keeps the input in a snapshot persists it itself.
 		if (widget && !this.options.inputSnapshot && this.options.shouldPersistInput?.() !== false) {
-			writeNewChatDraftState(this.storageService, { inputText: this.getInputValue(), attachments: [...this.attachments], references: this._getDraftReferences(widget) }, this.options.getSavedDraftId?.());
+			writeNewChatDraftState(this.storageService, this.getDraft(), this.options.getSavedDraftId?.());
 		}
 	}
 
 	private _getDraftReferences(widget: ChatWidget): IDynamicVariable[] | undefined {
 		const references = getDynamicVariablesForWidget(widget);
 		return references.length ? [...references] : undefined;
+	}
+
+	private _getSendContext(): IChatRequestVariableEntry[] {
+		const outputContext = this.options.textOnly ? undefined : toSessionOutputPromptEntry(this.outputType);
+		return outputContext ? [outputContext] : [];
+	}
+
+	/** Restores hidden send context into the composition's controls without adding it to the attachment pills. */
+	private _restoreSendContext(draft: IChatDraft): void {
+		if (!this.options.textOnly) {
+			this._outputType?.set(readSessionOutputTypeFromSendContext(draft.sendContext), undefined);
+		}
 	}
 
 	/** Binds the mentions of a draft to what they stand for, so that each becomes the pill it was. */
@@ -878,10 +939,13 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 		if (inlineAttachments) {
 			store.add(inlineAttachments.onDidChange(write));
 		}
+		store.add(autorun(reader => {
+			this._outputType?.read(reader);
+			write();
+		}));
 		if (this.options.inputSnapshot) {
 			store.add(this.options.inputSnapshot.registerRestorer(draft => this._showRestoredInput(widget, draft)));
 		}
-		write();
 		return store;
 	}
 
@@ -896,12 +960,13 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 		this.setInputValue(draft.inputText);
 		widget.attachmentModel.clearAndSetContext(...draft.attachments);
 		this._restoreDraftReferences(draft);
+		this._restoreSendContext(draft);
 		return true;
 	}
 
 	private _writeInputSnapshot(widget: ChatWidget): void {
 		if (this._widget === widget && !this._bindingModel) {
-			const draft = { inputText: this.getInputValue(), attachments: [...this.attachments], references: this._getDraftReferences(widget) };
+			const draft = this.getDraft();
 			this.options.inputSnapshot?.set(draft);
 			this.options.onDidChangeDraft?.(draft);
 		}
@@ -946,12 +1011,14 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 				this._widget?.attachmentModel.addContext(...draft.attachments);
 			}
 			this._restoreDraftReferences(draft);
+			this._restoreSendContext(draft);
 		}
 	}
 
 	getDraft(): IChatDraft {
 		const references = this._widget ? this._getDraftReferences(this._widget) : undefined;
-		return { inputText: this.getInputValue(), attachments: [...this.attachments], ...(references ? { references } : {}) };
+		const sendContext = this._getSendContext();
+		return { inputText: this.getInputValue(), attachments: [...this.attachments], ...(sendContext.length ? { sendContext } : {}), ...(references ? { references } : {}) };
 	}
 
 	setInputEnabled(enabled: boolean): void {
@@ -989,6 +1056,7 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 		this._widget?.attachmentModel.clearAndSetContext(...(draft?.attachments ?? []));
 		if (draft) {
 			this._restoreDraftReferences(draft);
+			this._restoreSendContext(draft);
 		}
 	}
 
@@ -999,6 +1067,7 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 		this.prefillInput(draft.inputText);
 		this.addAttachments(...draft.attachments);
 		this._restoreDraftReferences(draft);
+		this._restoreSendContext(draft);
 		this.saveState();
 		return true;
 	}
@@ -1387,8 +1456,8 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 			}
 
 			// The input is about to be cleared: until the send ends, the host restores what is sent.
-			this.options.onWillSendDraft?.(this.getDraft());
-			attemptId = this.options.inputSnapshot?.beginSendAttempt({ inputText: this.getInputValue(), attachments: [...this.attachments], references: this._getDraftReferences(widget) });
+			this.options.onWillSendDraft?.(draftBeforeWait);
+			attemptId = this.options.inputSnapshot?.beginSendAttempt(draftBeforeWait);
 			// Clear the input as a regular chat send does. The widget is bound to
 			// the draft's chat model, which the running session adopts once the
 			// host sends, so the draft must not carry the sent prompt.
@@ -1401,7 +1470,7 @@ export class SharedChatInputComposer extends Disposable implements INewSessionCo
 			}
 			// Prompt ranges, such as those of inline references, refer to the untrimmed input.
 			const queryOffset = rawQuery.length - rawQuery.trimStart().length;
-			const sentAttachments = attachments.map(entry => entry.range && queryOffset
+			const sentAttachments = [...attachments, ...(draftBeforeWait.sendContext ?? [])].map(entry => entry.range && queryOffset
 				? { ...entry, range: { start: entry.range.start - queryOffset, endExclusive: entry.range.endExclusive - queryOffset } }
 				: entry);
 			const accepted = await this.options.sendRequest({ query, attachments: sentAttachments.length > 0 ? sentAttachments : undefined, background, userInteraction, attemptId });

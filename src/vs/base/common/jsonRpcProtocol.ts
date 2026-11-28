@@ -90,7 +90,7 @@ export class JsonRpcProtocol extends Disposable {
 		});
 	}
 
-	public sendRequest<T = unknown>(request: Omit<IJsonRpcRequest, 'jsonrpc' | 'id'>, token: CancellationToken = CancellationToken.None, onCancel?: (id: JsonRpcId) => void): Promise<T> {
+	public sendRequest<T = unknown>(request: Omit<IJsonRpcRequest, 'jsonrpc' | 'id'>, token: CancellationToken = CancellationToken.None, onCancel?: (id: JsonRpcId) => void, send = this._send): Promise<T> {
 		if (this._store.isDisposed) {
 			return Promise.reject(new CancellationError());
 		}
@@ -110,7 +110,7 @@ export class JsonRpcProtocol extends Disposable {
 			cancelListener.dispose();
 		});
 
-		this._send({
+		send({
 			jsonrpc: '2.0',
 			id,
 			...request,

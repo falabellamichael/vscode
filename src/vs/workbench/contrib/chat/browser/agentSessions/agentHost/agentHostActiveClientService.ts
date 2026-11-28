@@ -14,8 +14,11 @@ import { Disposable, IDisposable, IReference } from '../../../../../../base/comm
 import { ResourceMap, ResourceSet } from '../../../../../../base/common/map.js';
 import { equals } from '../../../../../../base/common/objects.js';
 import { autorun, derived, IObservable, ISettableObservable, observableValue, transaction } from '../../../../../../base/common/observable.js';
-import { type IExtUri, joinPath } from '../../../../../../base/common/resources.js';
+import { type IExtUri, isEqualOrParent, joinPath } from '../../../../../../base/common/resources.js';
 import { URI } from '../../../../../../base/common/uri.js';
+import { usesEditorToolRegistry } from '../../../../../../platform/native/common/native.js';
+import { ConfigurationTarget } from '../../../../../../platform/configuration/common/configuration.js';
+import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { isCopilotAgentHostSessionType, isRemoteAgentHostSessionType } from '../../../../../../platform/agentHost/common/agentHostSessionType.js';
 import type { AgentCustomization, SessionActiveClient, ToolDefinition } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
 import type { ClientPluginCustomization } from '../../../../../../platform/agentHost/common/state/sessionState.js';
@@ -128,9 +131,7 @@ class AgentCustomizationScope extends Disposable {
 		return this._customAgents;
 	}
 
-	get tools(): IObservable<readonly ToolDefinition[]> {
-		return this._getClientTools(this._sessionType);
-	}
+	readonly tools: IObservable<readonly ToolDefinition[]>;
 
 	get isResolved(): IObservable<boolean> {
 		return this._isResolved;
@@ -143,7 +144,7 @@ class AgentCustomizationScope extends Disposable {
 		private readonly _syncProvider: ICustomizationSyncProvider,
 		private readonly _options: ILocalCustomizationSyncOptions | undefined,
 		private readonly _windowRemoteAuthority: string | null,
-		private readonly _getClientTools: (sessionType: string) => IObservable<readonly ToolDefinition[]>,
+		getClientTools: (sessionType: string) => IObservable<readonly ToolDefinition[]>,
 		private readonly _onDispose: () => void,
 		@IFileService private readonly _fileService: IFileService,
 		@IPromptsService private readonly _promptsService: IPromptsService,
@@ -151,8 +152,34 @@ class AgentCustomizationScope extends Disposable {
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IMcpService private readonly _mcpService: IMcpService,
 		@IConfigurationResolverService private readonly _configurationResolverService: IConfigurationResolverService,
+		@ILanguageModelToolsService toolsService: ILanguageModelToolsService,
+		@IWorkspaceContextService workspaceService: IWorkspaceContextService,
 	) {
 		super();
+		const catalog = getClientTools(_sessionType);
+		this.tools = !usesEditorToolRegistry(_sessionType) ? catalog : derived(reader => {
+			const servers = new Set<string>();
+			for (const server of this._mcpService.servers.read(reader)) {
+				const collection = server.readDefinitions().read(reader).collection;
+				if (!collection || collection.remoteAuthority !== _windowRemoteAuthority) {
+					continue;
+				}
+				if (collection.configTarget === ConfigurationTarget.WORKSPACE && !_roots?.some(root => workspaceService.getWorkspaceFolder(root))) {
+					continue;
+				}
+				if (collection.configTarget === ConfigurationTarget.WORKSPACE_FOLDER) {
+					const origin = collection.presentation?.origin;
+					if (!origin || !_roots?.some(root => isEqualOrParent(origin, root))) {
+						continue;
+					}
+				}
+				servers.add(server.definition.id);
+			}
+			return catalog.read(reader).filter(definition => {
+				const source = toolsService.getTool(definition.name)?.source;
+				return source?.type !== 'mcp' || servers.has(source.definitionId);
+			});
+		});
 		const preserveAgentFileCollisions = isCopilotCliSessionType(_sessionType);
 		this._bundler = this._register(instantiationService.createInstance(SyncedCustomizationBundler, createScopeAuthority(_sessionType, scopeKey), { preserveAgentFileCollisions }));
 		this._standaloneBundler = this._register(instantiationService.createInstance(SyncedCustomizationBundler, createStandaloneScopeAuthority(_sessionType, scopeKey), { standalone: true, preserveAgentFileCollisions }));
@@ -431,7 +458,8 @@ export class AgentHostActiveClientService extends Disposable implements IAgentHo
 			if (!tool) {
 				throw new Error(`Cannot expose unregistered tool ${toolId} to session ${sessionResource.toString()}.`);
 			}
-			return toolDataToDefinition(tool, getAgentFileToolReferenceName(tool));
+			const definition = toolDataToDefinition(tool, getAgentFileToolReferenceName(tool));
+			return usesEditorToolRegistry(sessionResource.scheme) ? { ...definition, name: tool.id } : definition;
 		}));
 		for (const resource of this._sessionToolAliases.get(sessionResource) ?? [sessionResource]) {
 			this._getSessionTools(resource).set(tools, undefined);
@@ -505,9 +533,26 @@ export class AgentHostActiveClientService extends Disposable implements IAgentHo
 		let obs = this._clientToolsByType.get(sessionType);
 		if (!obs) {
 			obs = derived(reader => {
+				const getAgentFileToolReferenceName = createAgentFileToolReferenceNameResolver(this._toolsService);
 				const tools = this._allToolsObs.read(reader);
 				const toolSets = this._allToolSetsObs.read(reader);
 				const enablement = this._toolSetEnablementService.observe(sessionType).read(reader);
+				if (usesEditorToolRegistry(sessionType)) {
+					// Chat's tool picker includes public standalone tools and tools in its visible sets.
+					// MCP contributes its own server-qualified IDs and retains auth and approval in the editor.
+					const available = new Set(tools.filter(tool => tool.canBeReferencedInPrompt).map(tool => tool.id));
+					for (const set of toolSets) {
+						if (!set.hiddenInToolsPicker) {
+							for (const tool of set.getTools(reader)) {
+								available.add(tool.id);
+							}
+						}
+					}
+					return tools.filter(tool => available.has(tool.id)).map(tool => ({
+						...toolDataToDefinition(tool, getAgentFileToolReferenceName(tool, this._toolsService)),
+						name: tool.id,
+					}));
+				}
 				const isCopilotSession = isCopilotAgentHostSessionType(sessionType);
 				const semanticSearchTool = isCopilotSession
 					? tools.find(tool => tool.id === CLIENT_SEMANTIC_SEARCH_TOOL_ID)
@@ -525,7 +570,6 @@ export class AgentHostActiveClientService extends Disposable implements IAgentHo
 				}
 				// This recomputes whenever tools, tool sets or their members change, so the full reference names are
 				// computed once per recompute rather than once per tool.
-				const getAgentFileToolReferenceName = createAgentFileToolReferenceNameResolver(this._toolsService);
 				return coalesce(tools.filter(tool => tool.source.type !== 'mcp' && tool.id !== RenameToolId && (enabledToolIds.has(tool.id) || tool === semanticSearchTool)).map(tool => {
 					if (!isCopilotSession) {
 						return toolDataToDefinition(tool, getAgentFileToolReferenceName(tool));

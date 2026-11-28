@@ -15,6 +15,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IUserDataProfileService } from '../../../../workbench/services/userDataProfile/common/userDataProfile.js';
+import { isSignalCMailAddress } from '../../../../workbench/contrib/mcp/browser/signalCDirectMail.js';
 import { IReachSubscriptionConnection } from '../../accountMenu/browser/reachSubscriptionConnection.js';
 import { AssistantBriefingPeriod } from './assistantBriefings.js';
 import { IAssistantRuns } from './assistantRuns.js';
@@ -23,6 +24,7 @@ const DATABASE = 'signal-c-assistant-briefings';
 const STORE = 'schedules';
 const CONFIGURED = 'sessions.assistant.briefingSchedulerConfigured';
 const CHECK_INTERVAL_MS = 60_000;
+const BRIEFING_RETRY_DELAY_MS = CHECK_INTERVAL_MS;
 
 export interface IAssistantBriefingTime {
 	readonly hour: number;
@@ -33,6 +35,7 @@ interface IAssistantBriefingSchedule extends IAssistantBriefingTime {
 	readonly period: AssistantBriefingPeriod;
 	readonly timeZone: string;
 	readonly nextAt: number;
+	readonly lastRun?: IAssistantBriefingRun;
 }
 
 export interface IAssistantRoutineSettings extends IAssistantBriefingTime {
@@ -40,17 +43,32 @@ export interface IAssistantRoutineSettings extends IAssistantBriefingTime {
 	readonly prompt: string;
 	readonly serverIds: readonly string[];
 	readonly cadence: 'daily' | 'weekdays';
+	readonly emailDelivery?: IAssistantRoutineEmailDelivery;
+}
+
+export interface IAssistantRoutineEmailDelivery {
+	readonly connectionId: string;
+	readonly recipient: string;
 }
 
 export type AssistantRoutineDraft = Partial<Pick<IAssistantRoutineSettings, 'cadence' | 'hour' | 'minute'>> & Pick<IAssistantRoutineSettings, 'name' | 'prompt'>;
 
 export type AssistantRoutineOutcome = 'completed' | 'needsAttention' | 'failed' | 'stopped';
+export type AssistantBriefingOutcome = AssistantRoutineOutcome | 'retryable';
 
 export interface IAssistantRoutineRun {
 	readonly id: string;
 	readonly startedAt: number;
 	readonly trigger: 'scheduled' | 'manual';
 	readonly status: AssistantRoutineOutcome | 'running' | 'interrupted';
+}
+
+interface IAssistantBriefingRun {
+	readonly id: string;
+	readonly startedAt: number;
+	readonly attempt: 1 | 2;
+	readonly status: AssistantRoutineOutcome | 'running' | 'interrupted';
+	readonly retryAt?: number;
 }
 
 export interface IAssistantRoutine extends IAssistantRoutineSettings {
@@ -85,6 +103,16 @@ function startRoutine(routine: IAssistantRoutine, trigger: IAssistantRoutineRun[
 	return { ...routine, lastRun: { id: generateUuid(), trigger, startedAt, status: 'running' } };
 }
 
+function briefingDueAt(schedule: AssistantSchedule): number {
+	return isBriefing(schedule) && schedule.lastRun?.retryAt !== undefined ? Math.min(schedule.nextAt, schedule.lastRun.retryAt) : schedule.nextAt;
+}
+
+function isRoutineEmailDelivery(value: unknown): value is IAssistantRoutineEmailDelivery {
+	return !!value && typeof value === 'object'
+		&& 'connectionId' in value && typeof value.connectionId === 'string' && !!value.connectionId
+		&& 'recipient' in value && typeof value.recipient === 'string' && isSignalCMailAddress(value.recipient);
+}
+
 function decodeSchedules(raw: string | undefined): readonly AssistantSchedule[] {
 	try {
 		const schedules = raw && JSON.parse(raw);
@@ -96,9 +124,19 @@ function decodeSchedules(raw: string | undefined): readonly AssistantSchedule[] 
 				&& (s.period === 'morning' || s.period === 'evening' || (
 					typeof s.id === 'string' && s.period === undefined && typeof s.name === 'string' && typeof s.prompt === 'string'
 					&& typeof s.enabled === 'boolean' && (s.cadence === 'daily' || s.cadence === 'weekdays')
-					&& Array.isArray(s.serverIds) && s.serverIds.length > 0 && s.serverIds.every((id: unknown) => typeof id === 'string')
+					&& (s.emailDelivery === undefined || isRoutineEmailDelivery(s.emailDelivery))
+					&& Array.isArray(s.serverIds) && (s.serverIds.length > 0 || s.emailDelivery !== undefined)
+					&& s.serverIds.every((id: unknown) => typeof id === 'string')
 				))).map((schedule: AssistantSchedule) => {
-					if (isBriefing(schedule) || schedule.lastRun === undefined) { return schedule; }
+					if (schedule.lastRun === undefined) { return schedule; }
+					if (isBriefing(schedule)) {
+						const run = schedule.lastRun;
+						const valid = run && typeof run.id === 'string' && Number.isFinite(run.startedAt)
+							&& (run.attempt === 1 || run.attempt === 2)
+							&& ['completed', 'needsAttention', 'failed', 'stopped', 'running', 'interrupted'].includes(run.status)
+							&& (run.retryAt === undefined || (Number.isFinite(run.retryAt) && run.status === 'failed' && run.attempt === 1));
+						return valid ? schedule : { ...schedule, lastRun: undefined };
+					}
 					const run = schedule.lastRun;
 					const valid = run && typeof run.id === 'string' && Number.isFinite(run.startedAt)
 						&& (run.trigger === 'scheduled' || run.trigger === 'manual')
@@ -148,7 +186,20 @@ export class AssistantBriefingScheduler extends Disposable implements IAssistant
 	}
 
 	async getSchedules(accountId: string): Promise<readonly IAssistantBriefingSchedule[]> {
-		return (await this.read(this.key(accountId))).filter(isBriefing);
+		const key = this.key(accountId);
+		const schedules = (await this.read(key)).filter(isBriefing);
+		if (!schedules.some(schedule => schedule.lastRun?.status === 'running')) { return schedules; }
+		return mainWindow.navigator.locks.request(`${DATABASE}:${key}`, { ifAvailable: true }, async lock => {
+			if (!lock) { return schedules; }
+			// A live briefing holds this lock until its final status has been saved.
+			await this.update(key, schedules => {
+				if (!schedules.some(schedule => isBriefing(schedule) && schedule.lastRun?.status === 'running')) { return undefined; }
+				const recovered = schedules.map(schedule => isBriefing(schedule) && schedule.lastRun?.status === 'running'
+					? { ...schedule, lastRun: { ...schedule.lastRun, status: 'interrupted' as const } } : schedule);
+				return { schedules: recovered, result: undefined };
+			});
+			return (await this.read(key)).filter(isBriefing);
+		});
 	}
 
 	async setSchedule(accountId: string, period: AssistantBriefingPeriod, time: IAssistantBriefingTime | undefined): Promise<void> {
@@ -181,10 +232,11 @@ export class AssistantBriefingScheduler extends Disposable implements IAssistant
 	}
 
 	async saveRoutine(accountId: string, settings: IAssistantRoutineSettings, id?: string): Promise<boolean> {
-		if (!settings.name.trim() || !settings.prompt.trim() || !settings.serverIds.length) { return false; }
+		if (!settings.name.trim() || !settings.prompt.trim() || (!settings.serverIds.length && !settings.emailDelivery)
+			|| (settings.emailDelivery !== undefined && !isRoutineEmailDelivery(settings.emailDelivery))) { return false; }
 		const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 		const nextAt = nextOccurrence(settings, timeZone, Date.now(), settings.cadence);
-		const routine = { ...settings, timeZone, nextAt };
+		const routine = { ...settings, emailDelivery: settings.emailDelivery, timeZone, nextAt };
 		const saved = id
 			? await this.changeRoutine(this.key(accountId), id, previous => ({ ...previous, ...routine }))
 			: await this.update(this.key(accountId), schedules => ({ schedules: [...schedules, { ...routine, id: generateUuid(), enabled: true }], result: true }));
@@ -224,13 +276,38 @@ export class AssistantBriefingScheduler extends Disposable implements IAssistant
 	private async finishRoutine(key: string, accountId: string, routine: IAssistantRoutine, run: IAssistantRoutineRun): Promise<void> {
 		let status: AssistantRoutineOutcome = 'failed';
 		try {
-			status = await this.runs.sendScheduledRoutine(accountId, routine, run.id);
+			const delivery = routine.emailDelivery;
+			status = await this.runs.sendScheduledRoutine(accountId, routine, run.id, delivery && (async () => {
+				const current = (await this.read(key)).find(item => isRoutine(item) && item.id === routine.id);
+				return !!current && isRoutine(current) && current.lastRun?.id === run.id
+					&& (run.trigger === 'manual' || current.enabled)
+					&& current.emailDelivery?.connectionId === delivery.connectionId && current.emailDelivery.recipient === delivery.recipient
+					&& current.name === routine.name && current.prompt === routine.prompt
+					&& current.serverIds.length === routine.serverIds.length && current.serverIds.every((id, index) => id === routine.serverIds[index]);
+			}));
 		} catch (error) {
 			this.log.error('[AssistantBriefingScheduler] Routine failed before returning a result', error);
 		}
 		if (!this._store.isDisposed) {
 			await this.changeRoutine(key, routine.id, current => current.lastRun?.id === run.id ? { ...current, lastRun: { ...run, status } } : current);
 		}
+	}
+
+	private async finishBriefing(key: string, accountId: string, period: AssistantBriefingPeriod, run: IAssistantBriefingRun, now: number): Promise<void> {
+		let outcome: AssistantBriefingOutcome = 'failed';
+		try {
+			outcome = await this.runs.sendScheduledBriefing(accountId, period);
+		} catch (error) {
+			this.log.error('[AssistantBriefingScheduler] Briefing failed before returning a result', error);
+		}
+		const retryAt = Math.max(now, Date.now()) + BRIEFING_RETRY_DELAY_MS;
+		await this.update(key, schedules => {
+			const current = schedules.find((item): item is IAssistantBriefingSchedule => isBriefing(item) && item.period === period);
+			if (!current || current.lastRun?.id !== run.id) { return undefined; }
+			const lastRun: IAssistantBriefingRun = { ...run, status: outcome === 'retryable' ? 'failed' : outcome,
+				...(outcome === 'retryable' && run.attempt === 1 && retryAt < current.nextAt ? { retryAt } : {}) };
+			return { schedules: schedules.map(item => item === current ? { ...current, lastRun } : item), result: undefined };
+		});
 	}
 
 	private activate(): void {
@@ -290,16 +367,21 @@ export class AssistantBriefingScheduler extends Disposable implements IAssistant
 			await mainWindow.navigator.locks.request(`${DATABASE}:${key}`, { ifAvailable: true }, async lock => {
 				if (!lock || this._store.isDisposed || this.runs.getPending(account.id)) { return; }
 				const due = await this.update(key, schedules => {
-					const first = schedules.filter(item => isBriefing(item) || item.enabled).sort((a, b) => a.nextAt - b.nextAt)[0];
-					if (!first || first.nextAt > now) { return undefined; }
-					const scheduled = isRoutine(first)
-						? { ...startRoutine(first, 'scheduled', now), nextAt: nextOccurrence(first, first.timeZone, now, first.cadence) }
-						: { ...first, nextAt: nextOccurrence(first, first.timeZone, now) };
+					const first = schedules.filter(item => isBriefing(item) || item.enabled).sort((a, b) => briefingDueAt(a) - briefingDueAt(b))[0];
+					if (!first || briefingDueAt(first) > now) { return undefined; }
+					let scheduled: AssistantSchedule;
+					if (isBriefing(first)) {
+						const retry = first.lastRun?.retryAt !== undefined && now < first.nextAt;
+						scheduled = { ...first, nextAt: retry ? first.nextAt : nextOccurrence(first, first.timeZone, now),
+							lastRun: { id: generateUuid(), startedAt: now, attempt: retry ? 2 as const : 1 as const, status: 'running' as const } };
+					} else {
+						scheduled = { ...startRoutine(first, 'scheduled', now), nextAt: nextOccurrence(first, first.timeZone, now, first.cadence) };
+					}
 					return { schedules: schedules.map(item => item === first ? scheduled : item), result: scheduled };
 				});
 				if (due && !this._store.isDisposed) {
 					if (isBriefing(due)) {
-						await this.runs.sendScheduledBriefing(account.id, due.period);
+						if (due.lastRun) { await this.finishBriefing(key, account.id, due.period, due.lastRun, now); }
 					} else if (due.lastRun) {
 						await this.finishRoutine(key, account.id, due, due.lastRun);
 					}

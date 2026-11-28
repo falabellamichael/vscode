@@ -43,7 +43,8 @@
 	box-sizing: border-box;
 	display: flex;
 	flex-direction: column;
-	background: var(--vscode-editor-background);
+	background: var(--vscode-sideBar-background, var(--vscode-agentsPanel-background, var(--vscode-editor-background)));
+	color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
 }
 
 .ai-customization-management-editor .sidebar-header-row {
@@ -239,7 +240,8 @@
 
 /* Content area */
 .ai-customization-management-editor .management-content {
-	background-color: var(--vscode-editor-background);
+	background-color: var(--vscode-agentsPanel-background, var(--vscode-sideBar-background, var(--vscode-editor-background)));
+	color: var(--vscode-agentsPanel-foreground, var(--vscode-foreground));
 	height: 100%;
 	overflow: hidden;
 }
@@ -599,7 +601,7 @@
 per-word capitalization does not survive translation. */
 .ai-customization-group-header .group-label {
 	font-weight: var(--vscode-fontWeight-semiBold);
-	color: var(--vscode-sideBarSectionHeader-foreground, var(--vscode-foreground));
+	color: var(--vscode-foreground);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -4270,7 +4272,8 @@ per-word capitalization does not survive translation. */
 }
 
 .ai-customization-management-editor .editor-preview-container {
-	background: var(--vscode-editor-background);
+	background: var(--vscode-agentsPanel-background, var(--vscode-sideBar-background, var(--vscode-editor-background)));
+	color: var(--vscode-agentsPanel-foreground, var(--vscode-foreground));
 	overflow: hidden;
 }
 

@@ -5,6 +5,7 @@
 
 import { AsyncIterableProducer, raceCancellationError, Sequencer } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { StringSHA1 } from '../../../../base/common/hash.js';
 import { Iterable } from '../../../../base/common/iterator.js';
 import * as json from '../../../../base/common/json.js';
 import { normalizeDriveLetter } from '../../../../base/common/labels.js';
@@ -648,7 +649,7 @@ export class McpServer extends Disposable implements IMcpServer {
 				})
 				.map((o, reader) => o?.promiseResult.read(reader)?.data),
 			(entry) => entry.tools,
-			(entry, reader) => entry.map(def => this._instantiationService.createInstance(McpTool, this, toolPrefix.read(reader), def)).sort((a, b) => a.compare(b)),
+			(entry, reader) => this._createTools(entry, toolPrefix.read(reader)),
 			[],
 		);
 
@@ -1047,6 +1048,16 @@ export class McpServer extends Disposable implements IMcpServer {
 		return this._connection.get()?.stop() || Promise.resolve();
 	}
 
+	public withServerStopped<T>(task: () => Promise<T>): Promise<T> {
+		// Stop an in-flight initialization first so it can release the start queue.
+		const stopped = this.stop();
+		return this._connectionSequencer.queue(async () => {
+			await stopped;
+			await this.stop();
+			return task();
+		});
+	}
+
 	/** Waits for any ongoing tools to be refreshed before resolving. */
 	public awaitToolRefresh() {
 		return new Promise<void>(resolve => {
@@ -1065,6 +1076,29 @@ export class McpServer extends Disposable implements IMcpServer {
 			this._tools.fromServerPromise.set(undefined, tx);
 			this._prompts.fromServerPromise.set(undefined, tx);
 		});
+	}
+
+	private _createTools(definitions: readonly ValidatedMcpTool[], prefix: string): IMcpTool[] {
+		const legacyIds = definitions.map(def => (prefix + def.name).replaceAll('.', '_').slice(0, McpToolName.MaxLength));
+		const counts = new Map<string, number>();
+		for (const id of legacyIds) {
+			counts.set(id, (counts.get(id) ?? 0) + 1);
+		}
+
+		return definitions.map((def, index) => {
+			const wireName = def.serverToolName ?? def.name;
+			let id = legacyIds[index];
+			// A shared legacy ID must not carry an approval over to either of the tools.
+			if (counts.get(id)! > 1 || wireName !== def.name || prefix.length + def.name.length > McpToolName.MaxLength) {
+				const identity = new StringSHA1();
+				identity.update(JSON.stringify([this.collection.id, this.definition.id, wireName]));
+				// Normal IDs start with mcp_. Reserve a separate prefix for these aliases.
+				const aliasPrefix = 'mcp-';
+				const suffix = `-${identity.digest()}`;
+				id = aliasPrefix + def.name.slice(0, McpToolName.MaxLength - aliasPrefix.length - suffix.length) + suffix;
+			}
+			return this._instantiationService.createInstance(McpTool, this, id, def);
+		}).sort((a, b) => a.compare(b));
 	}
 
 	private async _normalizeTool(originalTool: MCP.Tool): Promise<ValidatedMcpTool | { error: string[] }> {
@@ -1335,16 +1369,20 @@ export class McpTool implements IMcpTool {
 	readonly visibility: McpToolVisibility;
 
 	public get definition(): MCP.Tool { return this._definition; }
+	public get wireName(): string {
+		// Older tool cache entries may omit serverToolName.
+		return this._definition.serverToolName ?? this._definition.name;
+	}
 	public get uiResourceUri(): string | undefined { return this._definition.uiResourceUri; }
 
 	constructor(
 		private readonly _server: McpServer,
-		idPrefix: string,
+		id: string,
 		private readonly _definition: ValidatedMcpTool,
 		@IMcpElicitationService private readonly _elicitationService: IMcpElicitationService,
 	) {
 		this.referenceName = _definition.name.replaceAll('.', '_');
-		this.id = (idPrefix + _definition.name).replaceAll('.', '_').slice(0, McpToolName.MaxLength);
+		this.id = id;
 		this.icons = McpIcons.fromStored(this._definition._icons);
 		this.visibility = _definition.visibility ?? (McpToolVisibility.Model | McpToolVisibility.App);
 	}
@@ -1368,8 +1406,7 @@ export class McpTool implements IMcpTool {
 	}
 
 	_callWithProgress(params: Record<string, unknown>, progress: ToolProgress | undefined, context: IMcpToolCallContext | undefined, requestMeta: MCP.RequestMetaObject | undefined, token = CancellationToken.None, allowRetry = true): Promise<MCP.CallToolResult> {
-		// serverToolName is always set now, but older cache entries (from 1.99-Insiders) may not have it.
-		const name = this._definition.serverToolName ?? this._definition.name;
+		const name = this.wireName;
 		const progressToken = progress ? generateUuid() : undefined;
 		const store = new DisposableStore();
 
@@ -1414,7 +1451,7 @@ export class McpTool implements IMcpTool {
 					arguments: params,
 					task: shouldUseTask ? {} : undefined,
 					_meta: meta,
-				}, token, progress ? (message) => progress.report({ message }) : undefined);
+				}, token, progress ? (message) => progress.report({ message }) : undefined, context?.errorOnUserInteraction);
 
 				// Wait for tools to refresh for dynamic servers (#261611)
 				await this._server.awaitToolRefresh();

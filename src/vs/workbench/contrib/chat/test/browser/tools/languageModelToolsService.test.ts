@@ -2289,6 +2289,40 @@ suite('LanguageModelToolsService', () => {
 		);
 	});
 
+	for (const revoke of [false, true]) {
+		test(`REACH All Access checks the owning chat before execution and result sharing (revoke: ${revoke})`, async () => {
+			const { service, chatService } = createTestToolsService(store);
+			const sessionId = 'reach-tool-approvals';
+			const capture: { invocation?: ChatToolInvocation } = {};
+			stubGetSession(chatService, sessionId, { capture, modeInfo: { permissionLevel: ChatPermissionLevel.AutoApprove } });
+			let enabled = true;
+			const tool = registerToolForTest(service, store, 'reachApprovalTest', {
+				prepareToolInvocation: async () => ({ confirmationMessages: { title: 'Run tool?', message: 'Fixture', confirmResults: true } }),
+				invoke: async () => {
+					enabled = !revoke;
+					return { content: [{ kind: 'text', value: 'fixture result' }] };
+				},
+			});
+			const checks: boolean[] = [];
+			const result = service.invokeTool(tool.makeDto({}, { sessionId }), async () => 0, CancellationToken.None, () => {
+				checks.push(enabled);
+				return enabled;
+			});
+			if (revoke) {
+				const invocation = await waitForPublishedInvocation(capture);
+				store.add(autorun(reader => {
+					if (invocation.state.read(reader).type === IChatToolInvocation.StateKind.WaitingForPostApproval) {
+						IChatToolInvocation.confirmWith(invocation, { type: ToolConfirmKind.Denied });
+					}
+				}));
+				await assert.rejects(result, isCancellationError);
+			} else {
+				assert.strictEqual((await result).content[0].value, 'fixture result');
+			}
+			assert.deepStrictEqual(checks, [true, !revoke]);
+		});
+	}
+
 	test('bypass approvals auto-approves terminal tool with confirmation messages', async () => {
 		const { service: testService, chatService: testChatService } = createTestToolsService(store, {
 			configureServices: config => {

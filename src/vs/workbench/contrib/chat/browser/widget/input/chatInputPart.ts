@@ -9,6 +9,7 @@ import { pauseCSSAnimationsWhenHidden } from '../../../../../../base/browser/ani
 import { DEFAULT_FONT_FAMILY } from '../../../../../../base/browser/fonts.js';
 import { IHistoryNavigationWidget } from '../../../../../../base/browser/history.js';
 import { hasModifierKeys, StandardKeyboardEvent } from '../../../../../../base/browser/keyboardEvent.js';
+import { Gesture } from '../../../../../../base/browser/touch.js';
 import { IActionViewItem } from '../../../../../../base/browser/ui/actionbar/actionbar.js';
 import { ActionViewItem, BaseActionViewItem, IActionViewItemOptions } from '../../../../../../base/browser/ui/actionbar/actionViewItems.js';
 import * as aria from '../../../../../../base/browser/ui/aria/aria.js';
@@ -63,7 +64,7 @@ import { localize } from '../../../../../../nls.js';
 import { IAccessibilityService } from '../../../../../../platform/accessibility/common/accessibility.js';
 import { MenuWorkbenchButtonBar } from '../../../../../../platform/actions/browser/buttonbar.js';
 import { IActionViewItemService, type IActionViewItemFactory } from '../../../../../../platform/actions/browser/actionViewItemService.js';
-import { getFlatActionBarActions, MenuEntryActionViewItem } from '../../../../../../platform/actions/browser/menuEntryActionViewItem.js';
+import { getFlatActionBarActions, IMenuEntryActionViewItemOptions, MenuEntryActionViewItem } from '../../../../../../platform/actions/browser/menuEntryActionViewItem.js';
 import { HiddenItemStrategy, MenuWorkbenchToolBar } from '../../../../../../platform/actions/browser/toolbar.js';
 import { IMenu, IMenuService, MenuId, MenuItemAction } from '../../../../../../platform/actions/common/actions.js';
 import { ChatQueuePickerActionItem } from './chatQueuePickerActionItem.js';
@@ -207,6 +208,8 @@ import { bindSandboxPlaceholder } from './editor/chatInputSandboxContribution.js
 import { PlaceholderTextContribution } from '../../../../../../editor/contrib/placeholderText/browser/placeholderTextContribution.js';
 import { SESSIONS_CHAT_CONTENT_HORIZONTAL_PADDING } from '../chatOptions.js';
 import { isIChatSessionFileChange2 } from '../../../../../common/chatSessionFileChange.js';
+import { getSessionOutputOption, ISessionOutputTypePickerOptions, readSessionOutputType, SessionOutputTypePicker, storeSessionOutputType, toSessionOutputPromptEntry } from './sessionOutputTypePicker.js';
+import { getSessionOutputKindFromSendContext, readSessionOutputTypeFromSendContext, SESSION_OUTPUT_CONTEXT_ID_PREFIX, type SessionOutputKind } from '../../../common/sessionOutputType.js';
 
 const $ = dom.$;
 
@@ -326,6 +329,8 @@ export interface IChatInputPartOptions {
 	renderSecondaryToolbar?: boolean;
 	/** Whether to create the toolbar backed by {@link MenuId.ChatInputStatus}. A host can render its own. */
 	renderStatusToolbar?: boolean;
+	/** Enables Output Type in Add Context. Pass true for input-owned selection state. */
+	outputTypePicker?: true | ISessionOutputTypePickerOptions;
 	menus: {
 		executeToolbar: MenuId;
 		telemetrySource: string;
@@ -585,6 +590,64 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			contextArr.add(...implicitChatVariables);
 		}
 		return contextArr;
+	}
+
+	/** Hidden context sent with, but not shown in, the input's draft. */
+	private _sendContext: IChatRequestVariableEntry[] = [];
+
+	/** Hidden context sent with, but not shown in, the input's draft. */
+	public getSendContext(): IChatRequestVariableEntry[] {
+		const sendContext = this._sendContext.filter(entry => !entry.id.startsWith(SESSION_OUTPUT_CONTEXT_ID_PREFIX));
+		const outputContext = this.options.outputTypePicker === true && !this.inline
+			? toSessionOutputPromptEntry(this._outputType.get())
+			: this._sendContext.find(entry => entry.id.startsWith(SESSION_OUTPUT_CONTEXT_ID_PREFIX));
+		if (outputContext) {
+			sendContext.unshift(outputContext);
+		}
+		return sendContext;
+	}
+
+	/**
+	 * Replaces the hidden context sent with this input, e.g. while seeding a request edit.
+	 * The output-type picker follows the restored selection but the stored default is unchanged.
+	 */
+	public setSendContext(sendContext: readonly IChatRequestVariableEntry[]): void {
+		this._applySendContext(sendContext);
+		this._syncInputStateToModel();
+		this._onDidChangeDraft.fire();
+	}
+
+	private _applySendContext(sendContext: readonly IChatRequestVariableEntry[]): void {
+		this._sendContext = [...sendContext];
+		if (this.options.outputTypePicker === true) {
+			this._outputType.set(readSessionOutputTypeFromSendContext(sendContext), undefined);
+		}
+	}
+
+	private _syncSendContextFromState(sendContext: readonly IChatRequestVariableEntry[] | undefined): void {
+		if (sendContext) {
+			this._sendContext = [...sendContext];
+			if (this.options.outputTypePicker === true) {
+				// A state without an explicit output choice follows the stored
+				// default rather than forcing Auto-Select; restored request
+				// edits still go through `setSendContext`, which keeps 'auto'.
+				this._outputType.set(getSessionOutputKindFromSendContext(sendContext) ?? readSessionOutputType(this.storageService), undefined);
+			}
+		} else {
+			// Clear stale hidden entries without touching the picker, which
+			// still reflects the stored default or the explicit selection.
+			this._sendContext = [];
+		}
+	}
+
+	private _setOutputType(kind: SessionOutputKind): void {
+		if (this._outputType.get() === kind) {
+			return;
+		}
+		this._outputType.set(kind, undefined);
+		storeSessionOutputType(this.storageService, kind);
+		this._syncInputStateToModel();
+		this._onDidChangeDraft.fire();
 	}
 
 	private _indexOfLastAttachedContextDeletedWithKeyboard: number = -1;
@@ -900,6 +963,8 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	private executeToolbar!: MenuWorkbenchToolBar;
 	private inputActionsToolbar!: MenuWorkbenchToolBar;
 	private _inputPickerResponsiveLayout: ChatInputPickerResponsiveLayout | undefined;
+	private readonly _outputTypePicker: SessionOutputTypePicker | undefined;
+	private readonly _outputType: ISettableObservable<SessionOutputKind>;
 	private readonly _pickerFocusListeners = this._register(new MutableDisposable());
 	private readonly _workingBorderAnimations = this._register(new MutableDisposable());
 	private readonly _workingBorderAnimationRestart = this._register(new MutableDisposable());
@@ -1341,6 +1406,14 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		this._currentChatModesObservable = observableValue<IChatModes>('currentChatModes', localModes);
 		this._agentPickerInAttachContext = createAgentPickerInAttachContext(this._createModePickerDelegate(), this.configurationService, this.telemetryService);
 		this._currentPermissionLevel = observableValue<ChatPermissionLevel>('permissionLevel', this.getDefaultPermissionLevel());
+		const outputTypePicker = this.options.outputTypePicker;
+		this._outputType = observableValue<SessionOutputKind>(this, outputTypePicker === true ? readSessionOutputType(this.storageService) : 'auto');
+		if (outputTypePicker && !this.inline) {
+			this._outputTypePicker = this._register(this.instantiationService.createInstance(SessionOutputTypePicker, outputTypePicker === true ? {
+				selected: this._outputType,
+				onSelect: kind => this._setOutputType(kind),
+			} : outputTypePicker));
+		}
 		const languageModelListChanged = observableSignalFromEvent(this, Event.any(
 			this.languageModelsService.onDidChangeLanguageModels,
 			this.languageModelsService.onDidChangeModelVisibility,
@@ -1761,6 +1834,70 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 	public get isAgentPickerInAttachContextMenu(): boolean {
 		return this._agentPickerInAttachContext.get() && !!this.getModePickerAction();
+	}
+
+	public get hasOutputTypePicker(): boolean {
+		return !!this._outputTypePicker;
+	}
+
+	public openOutputTypePicker(): void {
+		const attachContextButton = this.attachContextButtonElement;
+		this._outputTypePicker?.showPicker(attachContextButton ?? this.inputToolbarElement, () => {
+			if (attachContextButton === this.attachContextButtonElement && this.attachContextActionViewItem) {
+				this.attachContextActionViewItem.focus();
+			} else {
+				this.focus();
+			}
+		});
+	}
+
+	private _createAttachContextActionViewItem(action: MenuItemAction, options: IMenuEntryActionViewItemOptions): MenuEntryActionViewItem {
+		const picker = this._outputTypePicker;
+		if (!picker) {
+			return this.instantiationService.createInstance(MenuEntryActionViewItem, action, options);
+		}
+		const relayout = () => this._toolbarRelayoutScheduler.schedule();
+		return this.instantiationService.createInstance(class extends MenuEntryActionViewItem {
+			override render(container: HTMLElement): void {
+				super.render(container);
+				container.classList.add('chat-attach-context-with-output');
+				const indicator = dom.append(container, dom.$('a.action-label.chat-output-type-indicator'));
+				indicator.role = 'button';
+				indicator.tabIndex = 0;
+				indicator.setAttribute('aria-haspopup', 'listbox');
+				// Leave taps here to the browser so the parent + action does not also receive the gesture.
+				this._register(Gesture.ignoreTarget(indicator));
+				const open = () => picker.showPicker(indicator, () => indicator.hidden ? this.focus() : indicator.focus());
+				this._register(dom.addDisposableListener(indicator, dom.EventType.CLICK, event => {
+					dom.EventHelper.stop(event, true);
+					open();
+				}));
+				this._register(dom.addStandardDisposableListener(indicator, dom.EventType.KEY_DOWN, event => {
+					if (event.equals(KeyCode.Enter) || event.equals(KeyCode.Space)) {
+						event.preventDefault();
+						event.stopPropagation();
+						open();
+					}
+				}));
+				this._register(autorun(reader => {
+					const kind = picker.selected.read(reader);
+					const hidden = kind === 'auto';
+					if (indicator.hidden !== hidden) {
+						const restoreFocus = hidden && dom.isActiveElement(indicator);
+						indicator.hidden = hidden;
+						if (restoreFocus) {
+							this.focus();
+						}
+						relayout();
+					}
+					const option = getSessionOutputOption(kind);
+					indicator.className = `action-label chat-output-type-indicator ${ThemeIcon.asClassName(option.icon)}`;
+					const label = localize('sessionOutputType.indicatorLabel', "Output type: {0}", option.label);
+					indicator.setAttribute('aria-label', label);
+					indicator.title = label;
+				}));
+			}
+		}, action, options);
 	}
 
 	private getModePickerAction(): MenuItemAction | undefined {
@@ -2295,6 +2432,8 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 				}
 			}
 
+			this._syncSendContextFromState(state?.sendContext);
+
 			if (state) {
 				this._widget?.contribs.forEach(contrib => {
 					contrib.setInputState?.(state.contrib);
@@ -2733,6 +2872,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			selectedModelReason: selectedModel ? this._modelSelectionController.selectionReason : undefined,
 			selections: this._inputEditor?.getSelections() || [],
 			permissionLevel: this._currentPermissionLevel.get(),
+			sendContext: this.getSendContext(),
 			contrib: {},
 		};
 
@@ -4461,7 +4601,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 			},
 			actionViewItemProvider: (action, options) => {
 				if (action.id === CHAT_ATTACH_CONTEXT_ACTION_ID && action instanceof MenuItemAction) {
-					return this.attachContextActionViewItem = this.instantiationService.createInstance(MenuEntryActionViewItem, action, options);
+					return this.attachContextActionViewItem = this._createAttachContextActionViewItem(action, options);
 				}
 				// Phone-layout branch: when an agents-window phone presenter
 				// is active, replace the desktop Mode + Model pickers with a
@@ -4581,7 +4721,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 					return this.instantiationService.createInstance(ChatCustomizationsActionViewItem, action, options, this.instantiationService.createInstance(ChatCustomizationsHover), 'chatInput', undefined, false, undefined);
 				}
 				if (action.id === CHAT_ATTACH_CONTEXT_ACTION_ID && action instanceof MenuItemAction) {
-					return this.attachContextActionViewItem = this.instantiationService.createInstance(MenuEntryActionViewItem, action, options);
+					return this.attachContextActionViewItem = this._createAttachContextActionViewItem(action, options);
 				}
 				if (action.id === ChatVoiceInputModeAction.ID) {
 					return this.instantiationService.createInstance(VoiceInputModeActionViewItem, action, {
@@ -4684,6 +4824,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 				this._toolbarRelayoutScheduler.schedule();
 			}
 		}));
+
 		if (this.options.menus.inputSideToolbar) {
 			const toolbarSide = this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, inputAndSideToolbar, this.options.menus.inputSideToolbar, {
 				telemetrySource: this.options.menus.telemetrySource,

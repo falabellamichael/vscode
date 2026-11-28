@@ -41,6 +41,7 @@ export function toStoredChatDraft(draft: IChatDraft): object {
 	return {
 		inputText: draft.inputText,
 		attachments: draft.attachments.map(IChatRequestVariableEntry.toExport),
+		...(draft.sendContext ? { sendContext: draft.sendContext.map(IChatRequestVariableEntry.toExport) } : {}),
 		references: draft.references,
 	};
 }
@@ -49,12 +50,19 @@ export function toStoredChatDraft(draft: IChatDraft): object {
 export function fromStoredChatDraft(value: unknown): IChatDraft {
 	const draft = value as Partial<IChatDraft> | undefined;
 	const attachments = draft?.attachments ?? [];
-	if (!draft || typeof draft !== 'object' || typeof draft.inputText !== 'string' || !Array.isArray(attachments) || !attachments.every(isChatRequestVariableEntry)) {
+	const sendContext = draft?.sendContext;
+	if (!draft || typeof draft !== 'object' || typeof draft.inputText !== 'string' || !Array.isArray(attachments) || !attachments.every(isChatRequestVariableEntry)
+		|| (sendContext !== undefined && (!Array.isArray(sendContext) || !sendContext.every(isChatRequestVariableEntry)))) {
 		throw new Error('Invalid new-session draft state.');
 	}
 	// Drafts saved before references were saved, or with invalid ones, keep their text and attachments.
 	const references = Array.isArray(draft.references) && draft.references.every(isDynamicVariable) ? draft.references : undefined;
-	return { inputText: draft.inputText, attachments: attachments.map(IChatRequestVariableEntry.fromExport), references };
+	return {
+		inputText: draft.inputText,
+		attachments: attachments.map(IChatRequestVariableEntry.fromExport),
+		...(sendContext ? { sendContext: sendContext.map(IChatRequestVariableEntry.fromExport) } : {}),
+		references,
+	};
 }
 
 /** A send of a composer whose input was cleared for it, until the send is rejected, fails or starts. */

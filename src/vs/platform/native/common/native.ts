@@ -17,6 +17,19 @@ import { AuthInfo, Credentials } from '../../request/common/request.js';
 import { IPartsSplash } from '../../theme/common/themeService.js';
 import { AgentsWindowOpenSource, IAgentsLauncherOptions, IAgentsWindowDraft, IColorScheme, IOpenedAuxiliaryWindow, IOpenedMainWindow, IOpenEmptyWindowOptions, IOpenWindowOptions, IPoint, IRectangle, IWindowFolderLocation, IWindowOpenable } from '../../window/common/window.js';
 
+export const quickBooksSandboxCallbackPort = 33419;
+export const quickBooksSandboxCallbackPath = '/callback';
+export const quickBooksSandboxRedirectUri = `http://localhost:${quickBooksSandboxCallbackPort}${quickBooksSandboxCallbackPath}`;
+
+export function isSignalCQuickBooksSandboxStore(path: unknown): path is string {
+	return typeof path === 'string' && /(?:^|[/\\])quickbooks-mcp[/\\][0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.env$/i.test(path);
+}
+
+/** Intuit-generated credentials must be safe to place in the local server's dotenv file. */
+export function isQuickBooksOAuthCredential(value: unknown): value is string {
+	return typeof value === 'string' && /^[a-zA-Z0-9+/_=.~-]{1,4096}$/.test(value);
+}
+
 export interface IToastOptions {
 	readonly id: string;
 	/**
@@ -477,12 +490,16 @@ export interface ICommonNativeHostService {
 	 */
 	setApplicationBadge(badge: IApplicationBadge | undefined, options?: INativeHostOptions): Promise<void>;
 	openExternal(url: string, defaultApplication?: string): Promise<boolean>;
+	authorizeQuickBooksSandbox(clientId: string, clientSecret: string, operationId: string): Promise<string>;
+	reauthorizeQuickBooksSandbox(tokenStorePath: string, operationId: string): Promise<void>;
+	cancelQuickBooksSandboxAuthorization(operationId: string): Promise<void>;
 	requestReachAuthentication(request: ReachAuthenticationRequest): Promise<{ status: number; data?: unknown }>;
 	listReachAssistantModels(accessToken: string): Promise<ReachAssistantModel[]>;
 	readAssistantNewsFeeds(scope: AssistantNewsScope): Promise<readonly AssistantNewsFeed[]>;
-	readAssistantWeatherForecast(day: AssistantWeatherDay, location: AssistantWeatherLocation, apiKey: string): Promise<AssistantWeatherForecast>;
-	sendReachAssistantPrompt(accountId: string, accessToken: string, request: ReachAssistantRequest, requestId: string, conversationId: string): Promise<ReachAssistantResponse>;
-	stopReachAssistantPrompt(requestId: string): Promise<void>;
+	readAssistantWeatherForecast(day: AssistantWeatherDay, location: AssistantWeatherLocation, weatherApiKey: string, allowPublicFallback?: boolean): Promise<AssistantWeatherForecast>;
+	sendReachAssistantPrompt(accountId: string, accessToken: string, request: ReachAssistantRequest, requestId: string, conversationId: string, turnId?: string): Promise<ReachAssistantResponse>;
+	finishReachAssistantTurn(turnId: string): Promise<void>;
+	accessReachWorkspaceFile(root: URI, request: ReachWorkspaceFileRequest): Promise<ReachWorkspaceFileResult>;
 	/** Incremental reply text while an assistant request streams; keyed by request id. */
 	readonly onDidReceiveReachAssistantChunk: Event<{ readonly requestId: string; readonly delta: string }>;
 	moveItemToTrash(fullPath: string): Promise<void>;
@@ -666,7 +683,7 @@ export const INativeHostService = createDecorator<INativeHostService>('nativeHos
  */
 export interface INativeHostService extends ICommonNativeHostService { }
 
-export type AssistantNewsScope = 'toronto' | 'canada' | 'world';
+export type AssistantNewsScope = 'toronto' | 'canada' | 'world' | 'ai';
 
 export type AssistantWeatherDay = 'today' | 'tomorrow';
 
@@ -687,7 +704,7 @@ export function normalizeAssistantWeatherLocation(location: AssistantWeatherLoca
 }
 
 export interface AssistantWeatherForecast {
-	readonly source: 'The Weather Network';
+	readonly source: 'The Weather Network' | 'Open-Meteo';
 	readonly sourceUrl: string;
 	readonly location: string;
 	readonly date: string;
@@ -703,13 +720,33 @@ export interface AssistantNewsFeed {
 	readonly error?: string;
 }
 
+export const REACH_CHAT_PROVIDER_ID = 'reach';
+export type ReachWorkspaceFileRequest = { readonly path: string; readonly encoding?: 'utf8' | 'base64' } & (
+	{ readonly operation: 'create'; readonly content: string } | { readonly operation: 'read' }
+);
+export interface ReachWorkspaceFileResult {
+	readonly uri: string;
+	readonly bytes: number;
+	readonly content?: string;
+}
+export const REACH_CHAT_SESSION_TYPE = `agent-host-${REACH_CHAT_PROVIDER_ID}`;
 export const REACH_ACCOUNT_ORIGIN = 'https://unbent-semicolon-hermit.ngrok-free.dev';
+export const COHERE_CHAT_PROVIDER_ID = 'cohere';
+export const COHERE_CHAT_SESSION_TYPE = `agent-host-${COHERE_CHAT_PROVIDER_ID}`;
+
+export function usesEditorToolRegistry(sessionType: string): boolean {
+	return sessionType === REACH_CHAT_SESSION_TYPE || sessionType === COHERE_CHAT_SESSION_TYPE;
+}
+
 export const REACH_ASSISTANT_PROMPT_LIMIT = 8_000;
 
 export interface ReachAssistantModel {
 	readonly id: string;
 	readonly name: string;
 	readonly supportsTools?: boolean;
+	readonly supportsVision?: boolean;
+	readonly contextWindow?: number;
+	readonly automaticOutput?: boolean;
 }
 
 export interface ReachAssistantToolCall {
@@ -721,9 +758,11 @@ export interface ReachAssistantToolCall {
 export interface ReachAssistantChatMessage {
 	readonly role: 'system' | 'user' | 'assistant' | 'tool';
 	readonly content: string;
+	readonly imageUrls?: readonly string[];
 	readonly name?: string;
 	readonly toolCallId?: string;
 	readonly toolCalls?: readonly ReachAssistantToolCall[];
+	readonly toolPlan?: string;
 }
 
 export interface ReachAssistantToolSpec {
@@ -736,6 +775,8 @@ export interface ReachAssistantRequest {
 	readonly messages: readonly ReachAssistantChatMessage[];
 	readonly modelId?: string;
 	readonly tools?: readonly ReachAssistantToolSpec[];
+	/** Compact descriptions and argument names for models that use the text tool-call protocol. */
+	readonly textToolIndex?: string;
 	readonly isTask?: boolean;
 }
 
@@ -745,5 +786,6 @@ export type ReachAuthenticationRequest =
 	| { readonly action: 'logout'; readonly accessToken: string };
 
 export type ReachAssistantResponse =
-	| { readonly kind: 'reply'; readonly text: string; readonly model?: string; readonly toolCalls?: readonly ReachAssistantToolCall[] }
-	| { readonly kind: 'signedOut' | 'subscriptionRequired' | 'allowanceExhausted' | 'noModel' | 'modelUnavailable' | 'busy' | 'stopped' | 'unavailable' };
+	| { readonly kind: 'reply'; readonly text: string; readonly model?: string; readonly toolCalls?: readonly ReachAssistantToolCall[]; readonly toolPlan?: string; readonly actions?: readonly string[] }
+	| { readonly kind: 'signedOut' | 'subscriptionRequired' | 'allowanceExhausted' | 'noModel' | 'modelUnavailable' | 'busy' | 'stopped' }
+	| { readonly kind: 'unavailable'; readonly reason?: 'toolOnly' | 'inputTooLarge' | 'responseTooLarge' | 'rejectedToolCall' | 'outputLimit' | 'providerStreamError' | 'preflightUnavailable' | 'imageUnsupported'; readonly status?: number; readonly model?: string; readonly detail?: string };

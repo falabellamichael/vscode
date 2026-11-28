@@ -559,8 +559,8 @@ export abstract class BaseWindow extends Disposable implements IBaseWindow {
 			const effectiveForegroundColor = this.windowControlsDimmed && foregroundColor ? this.dimColor(foregroundColor) : foregroundColor;
 
 			win.setTitleBarOverlay({
-				color: effectiveBackgroundColor?.trim() === '' ? undefined : effectiveBackgroundColor,
-				symbolColor: effectiveForegroundColor?.trim() === '' ? undefined : effectiveForegroundColor,
+				color: this.toOverlayHexColor(effectiveBackgroundColor),
+				symbolColor: this.toOverlayHexColor(effectiveForegroundColor),
 				height: options.height ? options.height - 1 : undefined // account for window border
 			});
 		}
@@ -569,6 +569,16 @@ export abstract class BaseWindow extends Disposable implements IBaseWindow {
 		else if (isMacintosh && options.height !== undefined) {
 			win.setWindowButtonPosition(getMacOSWindowControlsPosition(options.height, release(), options.horizontalInset));
 		}
+	}
+
+	private toOverlayHexColor(color: string | undefined): string | undefined {
+		const trimmed = color?.trim();
+		if (!trimmed) {
+			return undefined;
+		}
+
+		const parsed = Color.Format.CSS.parse(trimmed);
+		return parsed ? Color.Format.CSS.formatHex(parsed) : trimmed;
 	}
 
 	private dimColor(color: string): string {

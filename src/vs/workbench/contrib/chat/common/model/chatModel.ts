@@ -2474,6 +2474,9 @@ export interface IChatModelInputState {
 	/** Current attachments in the input */
 	attachments: readonly IChatRequestVariableEntry[];
 
+	/** Hidden request context associated with the draft, such as the selected output type. */
+	sendContext?: readonly IChatRequestVariableEntry[];
+
 	/** Currently selected chat mode */
 	mode: {
 		/** Mode ID (e.g., 'ask', 'edit', 'agent', or custom mode ID) */
@@ -2527,6 +2530,8 @@ export interface IChatModelInputState {
  */
 export interface ISerializableChatModelInputState {
 	attachments: readonly IChatRequestVariableEntry[];
+	/** Hidden request context associated with the draft. */
+	sendContext?: readonly IChatRequestVariableEntry[];
 	mode: {
 		id: string;
 		kind: ChatModeKind | undefined;
@@ -2564,6 +2569,7 @@ interface ILegacySerializableChatModelInputState extends ISerializableChatModelI
 export function reviveSerializableInputState(state: ISerializableChatModelInputState): IChatModelInputState {
 	return {
 		attachments: (state.attachments ?? []).map(IChatRequestVariableEntry.fromExport),
+		...(state.sendContext ? { sendContext: state.sendContext.map(IChatRequestVariableEntry.fromExport) } : {}),
 		mode: state.mode,
 		selectedModel: state.selectedModel && {
 			identifier: state.selectedModel.identifier,
@@ -2860,6 +2866,7 @@ class InputModel implements IInputModel {
 		return {
 			contrib: value.contrib,
 			attachments: persistableAttachments.map(IChatRequestVariableEntry.toExport),
+			...(value.sendContext ? { sendContext: value.sendContext.map(IChatRequestVariableEntry.toExport) } : {}),
 			mode: value.mode,
 			selectedModel: value.selectedModel ? {
 				identifier: value.selectedModel.identifier,

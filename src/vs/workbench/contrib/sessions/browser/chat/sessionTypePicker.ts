@@ -202,6 +202,7 @@ export class SessionTypePicker extends Disposable {
 	private readonly _quickChatSourceWatch = this._register(new MutableDisposable());
 	private _pendingInitialPick: IPreferredSessionType | undefined;
 	private _pendingExplicitPick: IPickedSessionType | undefined;
+	private _selectionVersion = 0;
 	private _hasResolvedFolderPick = false;
 
 	private readonly _renderDisposables = this._register(new DisposableStore());
@@ -787,7 +788,8 @@ export class SessionTypePicker extends Disposable {
 		}
 		const visiblePickChanged = pick.providerId !== this._picked?.providerId || pick.sessionTypeId !== this._picked?.sessionTypeId;
 		if (this._options?.prepareSessionTypeSelection) {
-			if (!await this._options.prepareSessionTypeSelection(pick)) {
+			const version = ++this._selectionVersion;
+			if (!await this._options.prepareSessionTypeSelection(pick) || version !== this._selectionVersion || this._store.isDisposed) {
 				return;
 			}
 			if (this._isProviderAllowed(pick.providerId)) {

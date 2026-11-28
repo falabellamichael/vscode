@@ -67,29 +67,25 @@ export class LoopbackAuthServer implements ILoopbackServer {
 				const reqUrl = new URL(req.url!, `http://${req.headers.host}`);
 				switch (reqUrl.pathname) {
 					case this._callbackPath: {
-						const code = reqUrl.searchParams.get('code') ?? undefined;
-						const state = reqUrl.searchParams.get('state') ?? undefined;
-						const error = reqUrl.searchParams.get('error') ?? undefined;
-						if (error) {
-							res.writeHead(302, { location: `/done?error=${reqUrl.searchParams.get('error_description') || error}` });
-							res.end();
-							deferredPromise.error(new Error(error));
+						const states = reqUrl.searchParams.getAll('state');
+						if (deferredPromise.isSettled || states.length !== 1 || states[0] !== this.state) {
+							res.writeHead(400).end();
 							break;
 						}
-						if (!code || !state) {
-							res.writeHead(400);
-							res.end();
+						const codes = reqUrl.searchParams.getAll('code');
+						const errors = reqUrl.searchParams.getAll('error');
+						if (errors.length === 1 && errors[0] && !codes.length) {
+							const description = reqUrl.searchParams.get('error_description') || errors[0];
+							res.writeHead(302, { location: `/done?error=${encodeURIComponent(description)}` }).end();
+							void deferredPromise.error(new Error(errors[0]));
 							break;
 						}
-						if (this.state !== state) {
-							res.writeHead(302, { location: `/done?error=${encodeURIComponent('State does not match.')}` });
-							res.end();
-							deferredPromise.error(new Error('State does not match.'));
+						if (codes.length !== 1 || !codes[0] || errors.length) {
+							res.writeHead(400).end();
 							break;
 						}
-						deferredPromise.complete({ code, state });
-						res.writeHead(302, { location: '/done' });
-						res.end();
+						void deferredPromise.complete({ code: codes[0], state: states[0] });
+						res.writeHead(302, { location: '/done' }).end();
 						break;
 					}
 					// Serve the static files

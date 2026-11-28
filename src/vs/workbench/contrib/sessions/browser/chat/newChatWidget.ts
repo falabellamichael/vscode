@@ -24,6 +24,7 @@ import { IInstantiationService } from '../../../../../platform/instantiation/com
 import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { REACH_CHAT_PROVIDER_ID } from '../../../../../platform/native/common/native.js';
 import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
 import { observableConfigValue } from '../../../../../platform/observable/common/platformObservableUtils.js';
 import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentity.js';
@@ -93,6 +94,7 @@ import { ISavedSessionDraft } from '../../common/savedSessionDrafts.js';
 import { writeNewChatDraftState } from '../../common/newChatDraftState.js';
 import { Menus } from '../menus.js';
 import { getAdditionalFolderContextId, getAdditionalRepositoryContextId } from '../../common/newChatContextIds.js';
+import { withSessionOutputTypeMetadata } from '../../../chat/common/sessionOutputType.js';
 import { NewSessionBannerPriority, NewSessionBanners } from '../../common/newSessionBanners.js';
 import { COMPARE_AGENTS_ENABLED_SETTING, COMPARE_AGENTS_OPEN_IN_GRID_SETTING, COMPARE_AGENTS_SHOW_PICKER_HINT_SETTING, ENVIRONMENT_PICKER_SETTING, NEW_SESSION_WELCOME_MESSAGES_SETTING, NEW_SESSION_WELCOME_PHRASES_SETTING, WORKSPACE_OPT_OUT_SETTING } from '../../common/chatConstants.js';
 import { getNewSessionWelcomePhrases, INewSessionWelcomeMessagesConfiguration } from '../../common/welcomePhrases.js';
@@ -1254,6 +1256,11 @@ export class NewChatWidget extends Disposable {
 	}
 
 	private async _prepareSessionTypeSelection(pick: IPickedSessionType): Promise<boolean> {
+		if (pick.providerId === LOCAL_AGENT_HOST_PROVIDER_ID && pick.sessionTypeId === REACH_CHAT_PROVIDER_ID) {
+			if (!await this.commandService.executeCommand<boolean>('workbench.action.chat.connectReach')) {
+				return false;
+			}
+		}
 		const folderUri = this._workspacePicker.selectedFolderUri;
 		if (!folderUri || this._isPreferredServable(folderUri, pick)) {
 			return true;
@@ -3341,9 +3348,11 @@ export class NewChatWidget extends Disposable {
 		const wasQuickChat = this._isQuickChatComposer.get();
 		const folderUri = wasQuickChat ? undefined : this._workspacePicker.selectedFolderUri;
 		const reseedFolderUri = background ? folderUri : undefined;
+		const requestMetadata = withSessionOutputTypeMetadata(undefined, attachedContext);
 		const sendOptions = {
 			query: request,
 			attachedContext: requestContext.size > 0 ? [...requestContext.values()] : undefined,
+			...(requestMetadata ? { metadata: requestMetadata } : {}),
 			background,
 			...(userInteraction ? { onDidCreateResponse: userInteraction.onDidCreateResponse } : {}),
 		};

@@ -42,7 +42,7 @@
 
 .automations-drop-overlay-description {
 	font-size: var(--vscode-fontSize-body2);
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 }
 
 .monaco-workbench .automations-cards-content:focus,
@@ -84,20 +84,20 @@
 
 .automations-cards-header-icon {
 	font-size: 16px;
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 }
 
 .automations-cards-header-title {
 	font-size: 16px;
 	font-weight: 600;
-	color: var(--vscode-foreground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 	margin: 0;
 	flex: 1;
 }
 
 .automations-cards-header-description {
 	font-size: 12px;
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	margin: 4px 0 16px;
 	line-height: 1.4;
 }
@@ -135,7 +135,8 @@
 	gap: var(--vscode-spacing-size120);
 	width: fit-content;
 	margin-bottom: var(--vscode-spacing-size80);
-	color: var(--vscode-foreground);
+	border-radius: var(--vscode-cornerRadius-small);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 	cursor: pointer;
 	list-style: none;
 }
@@ -193,7 +194,7 @@
 	width: var(--vscode-codiconFontSize-compact);
 	height: var(--vscode-codiconFontSize-compact);
 	border-radius: var(--vscode-cornerRadius-small);
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	cursor: default;
 	font-size: var(--vscode-codiconFontSize-compact);
 }
@@ -292,7 +293,7 @@
 	min-width: 0;
 	font-size: var(--vscode-fontSize-heading3);
 	font-weight: var(--vscode-fontWeight-semiBold);
-	color: var(--vscode-foreground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 	overflow: hidden;
 	white-space: nowrap;
 	text-overflow: ellipsis;
@@ -315,7 +316,7 @@
 	align-items: center;
 	gap: 6px;
 	font-size: var(--vscode-fontSize-label1);
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	min-width: 0;
 	margin-top: auto;
 	padding-top: var(--vscode-spacing-size80);
@@ -361,7 +362,7 @@
 /* Card Prompt */
 .automations-card-prompt {
 	font-size: var(--vscode-fontSize-body1);
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	margin-top: var(--vscode-spacing-size20);
 	line-height: 1.4;
 	overflow: hidden;
@@ -401,7 +402,7 @@
 	border: none;
 	border-radius: 4px;
 	background: transparent;
-	color: var(--vscode-icon-foreground);
+	color: var(--session-view-foreground, var(--vscode-icon-foreground));
 	cursor: pointer;
 	font-size: 16px;
 	min-width: 24px;
@@ -431,13 +432,13 @@
 .automations-cards-empty-title {
 	font-size: var(--vscode-fontSize-heading3);
 	font-weight: var(--vscode-fontWeight-semiBold);
-	color: var(--vscode-foreground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 	margin: 0;
 }
 
 .automations-cards-empty-description {
 	font-size: var(--vscode-fontSize-body1);
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	margin: 0 0 var(--vscode-spacing-size80);
 	max-width: 320px;
 	line-height: 1.4;
@@ -509,7 +510,7 @@
 
 .automations-cards-state-icon {
 	font-size: var(--vscode-codiconFontSize);
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 }
 
 .automations-cards-error .automations-cards-state-icon {
@@ -520,14 +521,14 @@
 	margin: 0;
 	font-size: var(--vscode-fontSize-heading3);
 	font-weight: var(--vscode-fontWeight-semiBold);
-	color: var(--vscode-foreground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 }
 
 .automations-cards-state-description {
 	margin: 0;
 	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.4;
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 }
 
 .automations-cards-state-create-button {
@@ -573,7 +574,7 @@
 }
 
 .automations-manage-remotes-count {
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	font-style: italic;
 	white-space: nowrap;
 }
@@ -588,7 +589,7 @@
 	border-radius: var(--vscode-cornerRadius-small);
 	box-sizing: border-box;
 	font-size: var(--vscode-fontSize-label1);
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 }
 
 .automations-cards-partial-state-error {
@@ -616,7 +617,7 @@
 	margin: 0 0 var(--vscode-spacing-size120);
 	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.4;
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 }
 
 .automations-template-section-summary {
@@ -626,7 +627,7 @@
 	width: fit-content;
 	margin-bottom: var(--vscode-spacing-size40);
 	border-radius: var(--vscode-cornerRadius-small);
-	color: var(--vscode-foreground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 	cursor: pointer;
 	list-style: none;
 }
@@ -668,7 +669,7 @@
 }
 
 .automations-template-section-count {
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	font-size: var(--vscode-fontSize-label1);
 }
 
@@ -718,7 +719,7 @@
 	overflow: hidden;
 	font-size: var(--vscode-fontSize-heading3);
 	font-weight: var(--vscode-fontWeight-semiBold);
-	color: var(--vscode-foreground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 	white-space: nowrap;
 	text-overflow: ellipsis;
 }
@@ -727,7 +728,7 @@
 .automations-template-card-source,
 .automations-template-card-schedule {
 	font-size: var(--vscode-fontSize-label1);
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 }
 
 .automations-template-card-badge {
@@ -742,7 +743,7 @@
 
 .automations-template-card-prompt {
 	font-size: var(--vscode-fontSize-body1);
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	display: -webkit-box;
 	overflow: hidden;
 	margin-top: var(--vscode-spacing-size20);
@@ -766,7 +767,7 @@
 .automations-cards-widget .automations-history-header {
 	font-size: var(--vscode-fontSize-heading3);
 	font-weight: var(--vscode-fontWeight-semiBold);
-	color: var(--vscode-foreground);
+	color: var(--session-view-foreground, var(--vscode-foreground));
 	margin-bottom: 12px;
 	display: flex;
 	align-items: center;
@@ -794,7 +795,7 @@
 .automations-cards-widget .automations-history-group-header {
 	font-size: 12px;
 	font-weight: 600;
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	margin-bottom: 8px;
 }
 
@@ -847,7 +848,7 @@
 
 .automations-cards-widget .automations-history-state {
 	margin-top: var(--vscode-spacing-size160);
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	font-size: var(--vscode-fontSize-label1);
 }
 

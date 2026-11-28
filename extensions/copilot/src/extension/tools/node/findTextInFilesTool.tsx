@@ -29,7 +29,7 @@ import { renderPromptElementJSON } from '../../prompts/node/base/promptRenderer'
 import { Tag } from '../../prompts/node/base/tag';
 import { ToolName } from '../common/toolNames';
 import { CopilotToolMode, ICopilotTool, ToolRegistry } from '../common/toolsRegistry';
-import { checkCancellation, InputGlobResult, inputGlobToPattern, patternContainsWorkspaceFolderPath } from './toolUtils';
+import { checkCancellation, getOptionalToolEndpoint, InputGlobResult, inputGlobToPattern, patternContainsWorkspaceFolderPath } from './toolUtils';
 // eslint-disable-next-line local/code-no-restricted-zone-imports -- Pre-existing layering violation found when the zone check started resolving extensionless imports.
 import { IExperimentationService } from '../../../lib/node/chatLibMain';
 import { IGrepResultService } from './grepResultService';
@@ -83,7 +83,7 @@ export class FindTextInFilesTool implements ICopilotTool<IFindTextInFilesToolPar
 			throw new Error('The property "pattern" is not supported, please use "query"');
 		}
 
-		const endpoint = options.model && (await this.endpointProvider.getChatEndpoint(options.model));
+		const endpoint = await getOptionalToolEndpoint(options, this.endpointProvider);
 		const modelFamily = endpoint?.family;
 
 		// The input _should_ be a pattern matching inside a workspace, folder, but sometimes we get absolute paths, so try to resolve them
@@ -101,7 +101,7 @@ export class FindTextInFilesTool implements ICopilotTool<IFindTextInFilesToolPar
 		const useGrepStyle = outputFormat === 'grep';
 		const defaultMaxResults = this.getDefaultMaxResults();
 		const maxResultsCap = this.getMaxResultsCap();
-		void this.sendSearchToolTelemetry(options, globResult, outputFormat, options.input.maxResults, defaultMaxResults, maxResultsCap);
+		this.sendSearchToolTelemetry(endpoint?.model, options, globResult, outputFormat, options.input.maxResults, defaultMaxResults, maxResultsCap);
 
 		checkCancellation(token);
 		const askedForTooManyResults = options.input.maxResults && options.input.maxResults > maxResultsCap;
@@ -314,8 +314,7 @@ Then if you want to include those files you can call the tool again by setting "
 		return result;
 	}
 
-	private async sendSearchToolTelemetry(options: vscode.LanguageModelToolInvocationOptions<IFindTextInFilesToolParams>, globResult: InputGlobResult | undefined, outputFormat: string, requestedMaxResults: number | undefined, defaultMaxResults: number, maxResultsCap: number): Promise<void> {
-		const model = options.model && (await this.endpointProvider.getChatEndpoint(options.model)).model;
+	private sendSearchToolTelemetry(model: string | undefined, options: vscode.LanguageModelToolInvocationOptions<IFindTextInFilesToolParams>, globResult: InputGlobResult | undefined, outputFormat: string, requestedMaxResults: number | undefined, defaultMaxResults: number, maxResultsCap: number): void {
 		const isMultiRoot = this.workspaceService.getWorkspaceFolders().length > 1;
 		const includePattern = options.input.includePattern;
 		/* __GDPR__

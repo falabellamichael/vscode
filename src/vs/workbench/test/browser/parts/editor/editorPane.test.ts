@@ -521,5 +521,14 @@ suite('EditorPane', () => {
 		await group.closeAllEditors();
 	});
 
+	test('EditorPane stamps data-editor-id on container element', () => {
+		const group = new TestEditorGroupView(1);
+		const editor = disposables.add(new TestEditor(group));
+		const container = document.createElement('div');
+		container.className = 'editor-instance';
+		editor.create(container);
+		assert.strictEqual(container.getAttribute('data-editor-id'), 'testEditor');
+	});
+
 	ensureNoDisposablesAreLeakedInTestSuite();
 });

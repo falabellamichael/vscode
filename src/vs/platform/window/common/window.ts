@@ -111,11 +111,14 @@ export interface IAgentsWindowDraft {
 	readonly inputText: string;
 	/** URI-aware serialized chat attachments, including exported image data. */
 	readonly attachments: string;
+	/** URI-aware serialized context sent with the request without showing it in the input. */
+	readonly sendContext?: string;
 }
 
 export function isAgentsWindowDraft(value: unknown): value is IAgentsWindowDraft {
 	const draft = value as Partial<IAgentsWindowDraft> | undefined;
-	return !!draft && typeof draft.inputText === 'string' && typeof draft.attachments === 'string';
+	return !!draft && typeof draft.inputText === 'string' && typeof draft.attachments === 'string'
+		&& (draft.sendContext === undefined || typeof draft.sendContext === 'string');
 }
 
 export interface IAgentsWindowNewSessionLink {

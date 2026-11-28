@@ -9,6 +9,12 @@ import { createDecorator } from '../../instantiation/common/instantiation.js';
 
 export const IURLService = createDecorator<IURLService>('urlService');
 
+/** OAuth callbacks may carry single-use codes, including in the original protocol URL. */
+export function protocolUrlForLog(uri: string | URI): string {
+	const value = typeof uri === 'string' ? uri : uri.toString(true);
+	return /^[a-z][a-z\d+.-]*:\/\/dynamicauthprovider(?:[/?#]|$)/i.test(value) ? value.split(/[?#]/, 1)[0] : value;
+}
+
 export interface IOpenURLOptions {
 
 	/**

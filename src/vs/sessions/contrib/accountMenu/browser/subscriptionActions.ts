@@ -268,9 +268,30 @@ export class AgentSubscriptionsAction extends Action2 {
 			{ id: 'devin-subscription' as const, label: localize('subscriptions.devinSubscription', "Devin Subscription"), description: devinDescriptions[devinStatus.kind], detail: devinStatus.kind === 'unavailable' ? localize('subscriptions.devinUnavailableDetail', "Check the Devin executable setting and restart the local agent host. Your saved sign-in will be reused.") : localize('subscriptions.devinSubscriptionDetail', "Connect your Devin account and load its models into the native Devin Subscription agent. Select to retry a saved connection or sign in again in your browser.") },
 			{ id: 'devin' as const, label: localize('subscriptions.devinCLI', "Devin CLI"), description: localize('subscriptions.devinClient', "Official command-line client"), detail: localize('subscriptions.devinDetail', "Open the installed Devin CLI using its own account sign-in.") },
 			{ id: 'reach' as const, label: reachLabel, description: reachAccount ? reachAccount.subscriptionActive ? localize('subscriptions.reachActive', "Subscription active") : localize('subscriptions.reachInactive', "Signed in · Subscription inactive") : localize('subscriptions.reachSignedOut', "Not signed in"),
-				detail: localize('subscriptions.reachDetail', "Sign in to your SignalREACH account in your browser.") },
+				detail: localize('subscriptions.reachDetail', "Use your SignalREACH subscription in Assistant and in regular chats. Choose REACH in the Agents or IDE chat provider menu.") },
+			{ id: 'cohere' as const, label: localize('subscriptions.cohere', "Cohere"), description: localize('subscriptions.cohereDescription', "Bring your own API key"),
+				detail: localize('subscriptions.cohereDetail', "Enter a Cohere API key from dashboard.cohere.com to chat with Command models. The key applies to this session; set the COHERE_API_KEY environment variable to keep it across restarts.") },
 		], { title: localize('subscriptions.title', "Agent Subscriptions"), placeHolder: localize('subscriptions.chooseProvider', "Choose the subscription you want to use"), matchOnDescription: true, matchOnDetail: true });
 		if (!provider) { return; }
+		if (provider.id === 'cohere') {
+			const key = (await quickInput.input({
+				title: localize('subscriptions.cohereKeyTitle', "Cohere API Key"),
+				prompt: localize('subscriptions.cohereKeyPrompt', "Paste a Cohere API key (dashboard.cohere.com/api-keys). Leave empty to clear the saved key."),
+				placeHolder: 'XXXX-XXXX-XXXX',
+			}))?.trim();
+			if (key === undefined) { return; }
+			const host = accessor.get(IAgentHostService);
+			await configuration.updateValue('chat.agentHost.cohere.apiKey', key, ConfigurationTarget.USER);
+			const result = await host.authenticate({ resource: 'https://api.cohere.com', token: key });
+			if ((result as { authenticated?: boolean }).authenticated === false) {
+				notifications.warn(localize('subscriptions.cohereKeyRejected', "The Cohere provider did not accept the key."));
+			} else {
+				notifications.info(key
+					? localize('subscriptions.cohereConnected', "Cohere API key saved. Choose Cohere in the agent picker to start a chat.")
+					: localize('subscriptions.cohereCleared', "Cohere API key cleared."));
+			}
+			return;
+		}
 		if (provider.id === 'reach') {
 			if (reachAccount) {
 				const action = await quickInput.pick([{ label: localize('subscriptions.reachSignOut', "Sign Out") }], { title: reachLabel });

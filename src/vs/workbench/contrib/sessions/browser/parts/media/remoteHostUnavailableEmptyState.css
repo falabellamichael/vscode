@@ -29,7 +29,7 @@
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 }
 
 .remote-host-unavailable-empty-state-icon .codicon {
@@ -49,7 +49,7 @@
 .remote-host-unavailable-empty-state-progress {
 	max-width: var(--session-view-centered-content-max-width);
 	margin: 0;
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	font-size: var(--vscode-fontSize-body1);
 	line-height: 1.4;
 }
@@ -60,7 +60,7 @@
 
 .remote-host-unavailable-empty-state-auto-connect {
 	margin-top: var(--vscode-spacing-size80);
-	color: var(--vscode-descriptionForeground);
+	color: var(--session-view-description-foreground, var(--vscode-descriptionForeground));
 	font-size: var(--vscode-fontSize-body2);
 }
 

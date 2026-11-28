@@ -3,6 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+.editor-instance[data-editor-id="workbench.editor.chatPetAchievements"] {
+	background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
+	display: flow-root;
+}
+
 .chat-pet-achievements-editor,
 .chat-pet-achievements-widget,
 .chat-pet-colors-widget {
@@ -433,7 +439,7 @@
 	margin: 0 auto var(--vscode-spacing-size120);
 	border: var(--vscode-strokeThickness) dashed var(--vscode-editorWidget-border);
 	border-radius: var(--vscode-cornerRadius-medium);
-	background: var(--vscode-editor-background);
+	background: var(--vscode-panel-background, var(--vscode-editor-background));
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-heading2);
 	font-weight: var(--vscode-fontWeight-semiBold);
@@ -512,7 +518,7 @@
 	height: 96px;
 	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border);
 	border-radius: var(--vscode-cornerRadius-medium);
-	background: var(--vscode-editor-background);
+	background: var(--vscode-panel-background, var(--vscode-editor-background));
 	image-rendering: pixelated;
 }
 

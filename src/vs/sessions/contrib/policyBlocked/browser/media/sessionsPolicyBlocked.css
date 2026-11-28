@@ -10,7 +10,7 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background: var(--vscode-editor-background);
+	background: var(--vscode-agents-background, var(--vscode-sideBar-background, var(--vscode-editor-background)));
 }
 
 .sessions-policy-blocked-overlay.update-required {

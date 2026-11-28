@@ -111,6 +111,7 @@ suite('CustomizationMarketplaceWorkbenchService', () => {
 		activeSessionResource = observableValue<URI>('activeSessionResource', URI.parse('vscode-chat-session://local/session')),
 		applicationName = 'code-oss',
 		signalCOutlookOAuthClientId?: string,
+		signalCGmailOAuthClientFile?: string,
 	): CustomizationMarketplaceWorkbenchService {
 		const platformSources = platformService.allSources ?? platformService.sources ?? [CustomizationMarketplaceSources.AgentFinderPublicFeed];
 		const normalizedPlatformService = new class extends mock<ICustomizationMarketplaceService>() {
@@ -143,11 +144,11 @@ suite('CustomizationMarketplaceWorkbenchService', () => {
 			defaultAccountService,
 			authenticationService,
 			telemetryService,
-			{ _serviceBrand: undefined, applicationName, signalCOutlookOAuthClientId },
+			{ _serviceBrand: undefined, applicationName, signalCOutlookOAuthClientId, signalCGmailOAuthClientFile },
 		));
 	}
 
-	function createMixedFixture(enabledIds: readonly string[], applicationName = 'code-oss', signalCOutlookOAuthClientId?: string) {
+	function createMixedFixture(enabledIds: readonly string[], applicationName = 'code-oss', signalCOutlookOAuthClientId?: string, signalCGmailOAuthClientFile?: string) {
 		const configuration = createConfiguration(enabledIds);
 		const publicEntries: ICustomizationMarketplaceEntry[] = Array.from({ length: 45 }, (_, index) => ({
 			identifier: `public-${index}`, displayName: `Mail server ${index}`, description: '', score: 100 - index,
@@ -176,7 +177,7 @@ suite('CustomizationMarketplaceWorkbenchService', () => {
 			override readonly allSources = this.sources;
 			override async query() { return { items: [], total: 0 }; }
 		}();
-		const service = createService(configuration, platformService, connectorsService, harnessProvider, undefined, undefined, undefined, undefined, undefined, undefined, undefined, applicationName, signalCOutlookOAuthClientId);
+		const service = createService(configuration, platformService, connectorsService, harnessProvider, undefined, undefined, undefined, undefined, undefined, undefined, undefined, applicationName, signalCOutlookOAuthClientId, signalCGmailOAuthClientFile);
 		return { configuration, service, publicEntries, connectors, connectorsService, nativeRequests, connectorCalls };
 	}
 
@@ -208,6 +209,12 @@ suite('CustomizationMarketplaceWorkbenchService', () => {
 		const { service } = createMixedFixture([], 'signal-c', '4aaa0011-bbbb-4ccc-8ddd-eeee12345678');
 		const apps = await service.query({ sourceIds: [signalCAppConnectionSource.id], query: 'Microsoft 365' }, CancellationToken.None);
 		assert.deepStrictEqual(apps.items.map(item => item.identifier), ['outlook-direct', 'microsoft-365']);
+	});
+
+	test('shows the direct and Workspace Gmail connections when the desktop client is configured', async () => {
+		const { service } = createMixedFixture([], 'signal-c', undefined, '/fixture/oauth-clients.json');
+		const apps = await service.query({ sourceIds: [signalCAppConnectionSource.id], query: 'Gmail' }, CancellationToken.None);
+		assert.deepStrictEqual(apps.items.map(item => item.identifier), ['gmail-direct', 'gmail']);
 	});
 
 	test('Local omits the GitHub Feed while keeping existing platform registries', async () => {

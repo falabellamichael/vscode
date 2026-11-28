@@ -1563,7 +1563,9 @@ export abstract class Workbench extends Disposable implements IAgentWorkbenchLay
 	}
 
 	protected _topRightSectionChildren(sessionsNode: ISerializedNode, editorNode: ISerializedNode, auxiliaryBarNode: ISerializedNode, customViewGridNode: ISerializedNode): ISerializedNode[] {
-		return [sessionsNode, editorNode, auxiliaryBarNode, customViewGridNode];
+		// The custom view grid goes first so a part it does not cover, such as the
+		// side pane, keeps its place beside it, as beside the sessions grid.
+		return [customViewGridNode, sessionsNode, editorNode, auxiliaryBarNode];
 	}
 
 	/** Attach any per-layout controllers once the editor part container exists. */
@@ -1982,8 +1984,8 @@ export abstract class Workbench extends Disposable implements IAgentWorkbenchLay
 			visible: this._effectiveVisible(Parts.SESSIONS_PART)
 		};
 
-		// Mutually exclusive with the sessions part (and the editor / auxiliary bar /
-		// panel), so it always claims the full row when it is visible.
+		// Mutually exclusive with the sessions part, and covers the parts its
+		// descriptor names (`coveredParts`), claiming the row they leave.
 		const customViewGridNode: ISerializedLeafNode = {
 			type: 'leaf',
 			data: { type: Parts.CUSTOM_VIEW_GRID_PART },
@@ -2475,7 +2477,17 @@ export abstract class Workbench extends Disposable implements IAgentWorkbenchLay
 
 	/** Whether a part is actually rendered right now. */
 	protected _effectiveVisible(part: Parts): boolean {
-		return this._desiredVisible(part) && !this.partVisibility.customViewGrid;
+		return this._desiredVisible(part) && (!this.partVisibility.customViewGrid || !this._customViewCovers(part));
+	}
+
+	/**
+	 * Whether the shown custom view covers `part`: while it is shown the part
+	 * keeps only its desired visibility, and reveals of it apply once the view
+	 * hides. A part the view does not cover keeps rendering beside it.
+	 */
+	private _customViewCovers(part: Parts): boolean {
+		const covered: readonly Parts[] = this.customViewService.activeCustomView.get()?.coveredParts ?? Workbench._CUSTOM_VIEW_EXCLUSIVE_PARTS;
+		return covered.includes(part);
 	}
 
 	/**
@@ -2895,9 +2907,14 @@ export abstract class Workbench extends Disposable implements IAgentWorkbenchLay
 	private _applyCustomViewGridVisibility(descriptor: ICustomViewDescriptor | undefined): void {
 		const visible = !!descriptor;
 		if (this.partVisibility.customViewGrid === visible) {
-			// Swapping one custom view for another only changes what is rendered.
+			// Swapping one custom view for another only changes what is rendered;
+			// their covered parts can differ, so visibility is applied again.
 			this.customViewGridPartService.setView(descriptor);
 			if (visible) {
+				if (this.workbenchGrid) {
+					this._applyExclusivePartVisibility();
+					this._updateExclusiveLayoutClasses();
+				}
 				this.focusPart(Parts.CUSTOM_VIEW_GRID_PART);
 			}
 			return;
@@ -2913,8 +2930,8 @@ export abstract class Workbench extends Disposable implements IAgentWorkbenchLay
 
 		if (visible && this.workbenchGrid) {
 			this._customViewCoveredPartWidths = {
-				editor: this._editorNodeShouldBeVisible() ? this.workbenchGrid.getViewSize(this.editorPartView).width : undefined,
-				auxiliaryBar: this._effectiveVisible(Parts.AUXILIARYBAR_PART) ? this._auxiliaryBarViewSize().width : undefined,
+				editor: this._editorNodeShouldBeVisible() && this._customViewCovers(Parts.EDITOR_PART) ? this.workbenchGrid.getViewSize(this.editorPartView).width : undefined,
+				auxiliaryBar: this._effectiveVisible(Parts.AUXILIARYBAR_PART) && this._customViewCovers(Parts.AUXILIARYBAR_PART) ? this._auxiliaryBarViewSize().width : undefined,
 			};
 		}
 

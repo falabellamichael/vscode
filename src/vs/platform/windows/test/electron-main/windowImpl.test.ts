@@ -144,6 +144,16 @@ suite('BaseWindow - window controls overlay', () => {
 		});
 	}
 
+	(isMacintosh ? test.skip : test)('normalizes rgb() titleBarOverlay colors to #rrggbb hex', () => {
+		const { window, nativeWindow, setTitleBarOverlay } = createWindow();
+		window.setWin(nativeWindow, { titleBarStyle: 'hidden', titleBarOverlay: true });
+		setTitleBarOverlay.resetHistory();
+
+		window.updateWindowControls({ height: 40, backgroundColor: 'rgb(255, 255, 255)', foregroundColor: 'rgb(17, 34, 51)' });
+
+		assert.deepStrictEqual(setTitleBarOverlay.args, [[{ color: '#ffffff', symbolColor: '#112233', height: 39 }]]);
+	});
+
 	(isMacintosh ? test : test.skip)('honors a fixed horizontal inset when the title-bar height changes', () => {
 		const { window, nativeWindow, setWindowButtonPosition } = createWindow();
 		window.setWin(nativeWindow, { titleBarStyle: 'hidden' });

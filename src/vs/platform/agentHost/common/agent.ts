@@ -799,6 +799,8 @@ export type IAgentCapabilities = AgentCapabilities;
 
 /** Agent Host-only capabilities that are not serialized to protocol clients. */
 export interface IAgentHostCapabilities {
+	/** Whether the provider exposes the host rename_chat tool to its model. */
+	readonly renameChatTool?: boolean;
 	readonly workspaceConversion: boolean;
 }
 
@@ -1113,6 +1115,8 @@ export interface IAgentChatContext {
 	readonly hostInstructions?: readonly string[];
 	/** Original user-facing message text before outgoing contributions, supplied only for its send. */
 	readonly originalMessageText?: string;
+	/** Previous turns in the addressed chat, including failed requests absent from provider history. */
+	readonly previousTurns?: readonly Turn[];
 	/** Records provider timing for the current send or resumed execution. */
 	readonly sendStageRecorder?: IAgentProviderSendStageRecorder;
 	/**

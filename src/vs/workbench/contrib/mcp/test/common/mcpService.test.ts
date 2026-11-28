@@ -499,6 +499,30 @@ suite('Workbench - MCP - McpService', () => {
 			});
 		});
 
+		test('keeps concurrent starts queued while the server is stopped for maintenance', async () => {
+			const { server, transports } = createPolicyServer('https://trusted.example/mcp', 'https://trusted.example/mcp');
+			const options = { promptType: 'never', errorOnUserInteraction: true } as const;
+			assert.strictEqual((await server.start(options)).state, McpConnectionState.Kind.Running);
+			const entered = new DeferredPromise<void>();
+			const resume = new DeferredPromise<void>();
+			const maintenance = server.withServerStopped(async () => {
+				await entered.complete();
+				return resume.p;
+			});
+			await entered.p;
+			const starting = server.start(options);
+			try {
+				await timeout(0);
+				assert.strictEqual(transports.length, 1);
+				assert.strictEqual(server.connectionState.get().state, McpConnectionState.Kind.Stopped);
+			} finally {
+				await resume.complete();
+				await maintenance;
+			}
+			assert.strictEqual((await starting).state, McpConnectionState.Kind.Running);
+			assert.strictEqual(transports.length, 2);
+		});
+
 		test('reverting a changed definition does not restore a stale resolved policy block', async () => {
 			const { server, registry, definition, resolution, resolutionResult, transports } = createPolicyServer('https://${input:host}/mcp', 'https://blocked.example/mcp');
 			const initial = await server.start({ promptType: 'never', errorOnUserInteraction: true });
@@ -852,6 +876,56 @@ suite('Workbench - MCP - McpService', () => {
 			requiringInteraction: [],
 			servers: [{ state: McpConnectionState.Kind.Running, toolCount: 1 }],
 		});
+	});
+
+	test('keeps distinct callable tool IDs when provider names normalize or truncate to the same name', async () => {
+		const { mcpService, registry } = createMcpService();
+		const longName = 'long_report_name_'.repeat(4);
+		const firstPage = ['reports.read', longName + 'first', 'ordinary'];
+		const secondPage = ['reports_read', longName + 'second'];
+		registry.makeTestTransport = () => {
+			const transport = new TestMcpMessageTransport();
+			transport.setResponder('tools/list', message => {
+				const request = message as MCP.ListToolsRequest;
+				const nextPage = request.params?.cursor === 'next';
+				return {
+					jsonrpc: MCP.JSONRPC_VERSION, id: request.id,
+					result: {
+						tools: (nextPage ? secondPage : firstPage).map(name => ({
+							name, description: name, inputSchema: { type: 'object' },
+						})),
+						nextCursor: nextPage ? undefined : 'next',
+					},
+				};
+			});
+			transport.setResponder('tools/call', message => {
+				const request = message as MCP.CallToolRequest;
+				return {
+					jsonrpc: MCP.JSONRPC_VERSION, id: request.id,
+					result: { content: [{ type: 'text', text: request.params.name }] },
+				};
+			});
+			return transport;
+		};
+
+		mcpService.updateCollectedServers();
+		const server = mcpService.servers.get()[0];
+		assert.ok(server instanceof McpServer);
+		const refresh = sinon.stub(server, 'awaitToolRefresh').resolves();
+		store.add(toDisposable(() => refresh.restore()));
+		await server.start();
+		const tools = await waitForState(server.tools, tools => tools.length === 5);
+		assert.strictEqual(new Set(tools.map(tool => tool.id)).size, tools.length);
+		assert.ok(tools.every(tool => /^[a-zA-Z0-9_-]{1,64}$/.test(tool.id)));
+		assert.match(tools.find(tool => tool.wireName === 'ordinary')!.id, /^mcp_.*_ordinary$/);
+		assert.ok(tools.filter(tool => tool.wireName !== 'ordinary').every(tool => tool.id.startsWith('mcp-')));
+
+		const responses = await Promise.all(tools.map(async tool => {
+			const result = await tool.call({});
+			assert.deepStrictEqual(result.content, [{ type: 'text', text: tool.wireName }]);
+			return tool.wireName;
+		}));
+		assert.deepStrictEqual(responses.sort(), [...firstPage, ...secondPage].sort());
 	});
 
 	test('does not notify servers observers when the collection is unchanged', () => {

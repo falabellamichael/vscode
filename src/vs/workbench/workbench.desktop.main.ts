@@ -200,6 +200,7 @@ import './contrib/remoteTunnel/electron-browser/remoteTunnel.contribution.js';
 
 // Chat
 import './contrib/chat/electron-browser/chat.contribution.js';
+import './contrib/chat/browser/agentSessions/agentHost/localReachChatConnection.js';
 import './contrib/chat/electron-browser/tunnelHost.contribution.js';
 
 // Encryption

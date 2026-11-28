@@ -16,7 +16,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/c
 import { ILogger, ILoggerService, NullLogger, NullLogService } from '../../../../platform/log/common/log.js';
 import { INotificationSource } from '../../../../platform/notification/common/notification.js';
 import { Progress } from '../../../../platform/progress/common/progress.js';
-import { IAuthenticationProviderSessionOptions, signalCMailOAuth, signalCMailOAuthPrefix } from '../../../services/authentication/common/authentication.js';
+import { getOAuthTokenFingerprint, IAuthenticationProviderSessionOptions, MCP_ACCEPT_PARTIAL_OAUTH_SCOPES, MCP_REFRESH_REJECTED_OAUTH_TOKEN, MCP_USE_HTTPS_OAUTH_CALLBACK, signalCMailOAuth, signalCMailOAuthPrefix } from '../../../services/authentication/common/authentication.js';
 import { DynamicAuthProvider, ExtHostAuthentication, IAuthorizationToken, reviveAccountIcon, TokenStore } from '../../common/extHostAuthentication.js';
 import { IProgressStepDto, MainThreadAuthenticationShape } from '../../common/extHost.protocol.js';
 import { IExtHostInitDataService } from '../../common/extHostInitDataService.js';
@@ -152,9 +152,13 @@ suite('DynamicAuthProvider', () => {
 		readonly providerId?: string;
 		readonly clientId?: string;
 		readonly clientSecret?: string;
+		readonly tokenEndpointAuthMethod?: string;
+		readonly signalCOAuthRedirectUri?: string;
 		readonly fetcher?: typeof fetch;
 		readonly trace?: string[];
 		readonly onDidOpenUri?: (uri: string) => void;
+		readonly signInCode?: string;
+		readonly onBrowserCallback?: (expected: URI) => URI;
 	}): TestDynamicAuthProvider {
 		const loggerService = new class extends mock<ILoggerService>() {
 			override createLogger(): ILogger {
@@ -166,12 +170,14 @@ suite('DynamicAuthProvider', () => {
 		const proxy = new class extends mock<Proxied<MainThreadAuthenticationShape>>() {
 			override $setSessionsForDynamicAuthProvider = (): Promise<void> => Promise.resolve();
 			// Never settles, so an abandoned authorization flow leaves no rejected promise behind.
-			override $waitForUriHandler = (): Promise<UriComponents> => new Promise<UriComponents>(() => { });
+			override $waitForUriHandler = (expected: UriComponents): Promise<UriComponents> => options.onBrowserCallback ? Promise.resolve(options.onBrowserCallback(URI.revive(expected))) : options.signInCode
+				? Promise.resolve(URI.parse(`vscode://dynamicauthprovider/authorize?code=${options.signInCode}`))
+				: new Promise<UriComponents>(() => { });
 		}();
 		const extHostWindow = new class extends mock<IExtHostWindow>() {
 			override async openUri(uri: string | URI): Promise<boolean> {
 				options.onDidOpenUri?.(uri.toString());
-				return false;
+				return !!(options.signInCode || options.onBrowserCallback);
 			}
 		}();
 		const extHostUrls = new class extends mock<IExtHostUrlsService>() {
@@ -180,7 +186,7 @@ suite('DynamicAuthProvider', () => {
 			}
 		}();
 		const initData = new class extends mock<IExtHostInitDataService>() {
-			override environment = { appUriScheme: 'vscode', appName: 'Test' } as IExtHostInitDataService['environment'];
+			override environment = { appUriScheme: options.signalCOAuthRedirectUri ? 'signal-c' : 'vscode', appName: 'Test' } as IExtHostInitDataService['environment'];
 		}();
 		const extHostProgress = new class extends mock<IExtHostProgress>() {
 			override async withProgressFromSource<R>(_source: string | INotificationSource, _options: ProgressOptions, task: (progress: Progress<IProgressStepDto>, token: CancellationToken) => Thenable<R>): Promise<R> {
@@ -202,9 +208,57 @@ suite('DynamicAuthProvider', () => {
 			disposables.add(new Emitter()),
 			options.initialTokens ?? [],
 			options.providerId,
+			options.tokenEndpointAuthMethod,
+			options.signalCOAuthRedirectUri ? { redirectUri: options.signalCOAuthRedirectUri, windowId: 42 } : undefined,
 			options.fetcher,
 		));
 	}
+
+	test('exchanges an HTTPS browser return with the exact registered redirect and original code', async () => {
+		const redirectUri = 'https://callback.example.com/oauth/return';
+		const code = 'fixture+&%=?/unicode-☃';
+		const scopes = ['read'];
+		let nonce: string | null = null;
+		let challenge: string | null = null;
+		const accessToken = jwt({ sub: 'https-fixture-account' });
+		const provider = createProvider({
+			...servers.nonMicrosoft,
+			resource,
+			signalCOAuthRedirectUri: redirectUri,
+			onBrowserCallback: expected => {
+				assert.strictEqual(expected.toString(true).split('?')[0], 'signal-c://dynamicauthprovider/https/authorize');
+				const query = new URLSearchParams(expected.query);
+				nonce = query.get('nonce');
+				assert.strictEqual(query.get('windowId'), '42');
+				return expected.with({ query: `${expected.query}&code64=${encodeBase64(VSBuffer.fromString(code), false, true)}` });
+			},
+			onDidOpenUri: value => {
+				const authorize = new URL(value);
+				assert.match(nonce ?? '', /^[a-f0-9]{32}$/);
+				assert.strictEqual(authorize.searchParams.get('state'), `${nonce}.42`);
+				assert.strictEqual(authorize.searchParams.get('redirect_uri'), redirectUri);
+				assert.strictEqual(authorize.searchParams.get('code_challenge_method'), 'S256');
+				challenge = authorize.searchParams.get('code_challenge');
+			},
+			fetcher: async (url, init) => {
+				assert.strictEqual(url, servers.nonMicrosoft.serverMetadata.token_endpoint);
+				assert.strictEqual(init?.redirect, 'error');
+				const params = new URLSearchParams(String(init?.body));
+				assert.strictEqual(params.get('code'), code);
+				assert.strictEqual(params.get('redirect_uri'), redirectUri);
+				const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(params.get('code_verifier') ?? ''));
+				assert.strictEqual(encodeBase64(VSBuffer.wrap(new Uint8Array(hash)), false, true), challenge);
+				return Response.json({ access_token: accessToken, token_type: 'Bearer', scope: 'read' });
+			},
+		});
+		const session = await provider.createSession(scopes, { [MCP_USE_HTTPS_OAUTH_CALLBACK]: true });
+		assert.strictEqual(session.accessToken, accessToken);
+	});
+
+	test('fails before opening a browser when the selected HTTPS callback is unconfigured', async () => {
+		const provider = createProvider({ ...servers.nonMicrosoft, resource, onDidOpenUri: () => assert.fail('No browser should open') });
+		await assert.rejects(provider.createSession(['read'], { [MCP_USE_HTTPS_OAUTH_CALLBACK]: true }), /cannot use the Signal-C HTTPS OAuth callback/);
+	});
 
 	test('honors an explicit provider ID without changing the default identity', () => {
 		const providerId = 'https://auth.example.com/ https://workiq.example.com/mcp client:client-id';
@@ -212,6 +266,104 @@ suite('DynamicAuthProvider', () => {
 		const legacy = createProvider({ ...servers.nonMicrosoft, resource });
 
 		assert.deepStrictEqual([scoped.id, legacy.id], [providerId, 'https://auth.example.com/ https://workiq.example.com/mcp']);
+	});
+
+	test('keeps a browser grant with fewer scopes for MCP and prefers the full grant once consent is completed', async () => {
+		const scopes = ['read', 'write'];
+		const options = { [MCP_ACCEPT_PARTIAL_OAUTH_SCOPES]: true };
+		let responseScopes = 'read';
+		let requests = 0;
+		const provider = createProvider({
+			...servers.nonMicrosoft, resource, signInCode: 'test-code',
+			onDidOpenUri: uri => assert.strictEqual(new URL(uri).searchParams.get('scope'), 'read write offline_access'),
+			fetcher: async () => Response.json({
+				access_token: jwt({ sub: 'account', jti: String(++requests) }), token_type: 'Bearer', scope: responseScopes,
+			}),
+		});
+
+		const partial = await provider.createSession(scopes, options);
+		assert.deepStrictEqual(partial.scopes, ['read']);
+		assert.deepStrictEqual(await provider.getSessions(scopes, { silent: true, ...options }), [partial]);
+		assert.deepStrictEqual(await provider.getSessions(['read'], { silent: true }), [partial]);
+		assert.deepStrictEqual(await provider.getSessions(scopes, { silent: true }), []);
+		await assert.rejects(provider.createSession(scopes, {}), /did not grant the required permissions \(write\)/);
+		assert.deepStrictEqual(await provider.getSessions(scopes, options), [partial]);
+
+		responseScopes = 'read write offline_access';
+		const complete = await provider.createSession(scopes, {});
+		assert.deepStrictEqual(complete.scopes, ['read', 'write', 'offline_access']);
+		assert.deepStrictEqual(await provider.getSessions(scopes, options), [complete, partial]);
+		assert.deepStrictEqual(await provider.getSessions(scopes, {}), [complete]);
+	});
+
+	test('keeps a reduced grant on refresh and inherits it when the next response omits scope', async () => {
+		const scopes = ['read', 'write'];
+		const options = { silent: true, [MCP_ACCEPT_PARTIAL_OAUTH_SCOPES]: true };
+		let refreshes = 0;
+		const provider = createProvider({
+			...servers.nonMicrosoft, resource,
+			initialTokens: [{ access_token: 'expired', token_type: 'Bearer', expires_in: 1, created_at: 0, refresh_token: 'fixture-refresh', scope: 'read write' }],
+			fetcher: async () => Response.json({
+				access_token: `refreshed-${++refreshes}`, token_type: 'Bearer', expires_in: 1,
+				...(refreshes === 1 ? { scope: 'read' } : {}),
+			}),
+		});
+		for (let attempt = 1; attempt <= 2; attempt++) {
+			const [session] = await provider.getSessions(scopes, options);
+			assert.deepStrictEqual({ token: session?.accessToken, scopes: session?.scopes }, { token: `refreshed-${attempt}`, scopes: ['read'] });
+			assert.deepStrictEqual(await provider.getSessions(scopes, { silent: true }), []);
+		}
+	});
+
+	test('refreshes only the rejected access token and shares the result with ordinary lookups', async () => {
+		const primary = { access_token: 'rejected-before-expiry', token_type: 'Bearer', scope: 'read', expires_in: 3600, created_at: Date.now(), refresh_token: 'support-refresh', id_token: jwt({ sub: 'support', preferred_username: 'Support' }) };
+		const sibling = { ...primary, access_token: 'other-account', refresh_token: 'other-refresh', id_token: jwt({ sub: 'other', preferred_username: 'Other' }) };
+		const refreshes: (string | null)[] = [];
+		const provider = createProvider({
+			...servers.nonMicrosoft, resource, initialTokens: [primary, sibling],
+			fetcher: async (url, init) => {
+				assert.strictEqual(url, servers.nonMicrosoft.serverMetadata.token_endpoint);
+				const params = new URLSearchParams(String(init?.body));
+				assert.strictEqual(params.get('grant_type'), 'refresh_token');
+				assert.strictEqual(params.get('resource'), resource);
+				refreshes.push(params.get('refresh_token'));
+				return Response.json({ access_token: 'replacement-token', token_type: 'Bearer', expires_in: 3600, refresh_token: 'rotated-refresh' });
+			},
+		});
+		const options = { [MCP_REFRESH_REJECTED_OAUTH_TOKEN]: await getOAuthTokenFingerprint(primary.access_token) };
+		const [first, duplicate] = await Promise.all([provider.getSessions(['read'], options), provider.getSessions(['read'], options)]);
+		assert.deepStrictEqual(first.map(session => [session.account.id, session.accessToken, session.scopes]), [['support', 'replacement-token', ['read']]]);
+		assert.deepStrictEqual(duplicate, []);
+		assert.deepStrictEqual(refreshes, ['support-refresh']);
+		assert.deepStrictEqual((await provider.getSessions(['read'], {})).map(session => session.accessToken).sort(), ['other-account', 'replacement-token']);
+	});
+
+	for (const { name, response, status } of [
+		{ name: 'refuses to switch accounts', response: { access_token: 'replacement', token_type: 'Bearer', id_token: jwt({ sub: 'other' }) }, status: 200 },
+		{ name: 'refuses to expand the grant', response: { access_token: 'replacement', token_type: 'Bearer', scope: 'read write' }, status: 200 },
+		{ name: 'leaves the grant available for browser recovery when the client is invalid', response: { error: 'invalid_client' }, status: 400 },
+		{ name: 'does not accept a token on a failed refresh response', response: { access_token: 'replacement', token_type: 'Bearer', scope: 'read' }, status: 503 },
+	]) {
+		test(`rejected access token refresh ${name}`, async () => {
+			const token = { access_token: 'rejected-access', token_type: 'Bearer', scope: 'read', expires_in: 3600, created_at: Date.now(), refresh_token: 'original-refresh', id_token: jwt({ sub: 'support' }) };
+			const provider = createProvider({
+				...servers.nonMicrosoft, resource, initialTokens: [token], fetcher: async () => Response.json(response, { status }),
+			});
+			assert.deepStrictEqual(await provider.getSessions(['read'], { [MCP_REFRESH_REJECTED_OAUTH_TOKEN]: await getOAuthTokenFingerprint(token.access_token) }), []);
+			assert.deepStrictEqual((await provider.getSessions(['read'], {})).map(session => session.accessToken), [token.access_token]);
+			assert.strictEqual(provider.generateNewClientIdCalls, 0);
+		});
+	}
+
+	test('reuses provider default scopes only for the matching empty request', async () => {
+		const provider = createProvider({
+			...servers.nonMicrosoft, resource, signInCode: 'test-code',
+			onDidOpenUri: uri => assert.strictEqual(new URL(uri).searchParams.get('scope'), null),
+			fetcher: async () => Response.json({ access_token: 'default-token', token_type: 'Bearer', scope: 'default:read default:write' }),
+		});
+		const grant = await provider.createSession([], {});
+		assert.deepStrictEqual(grant.scopes, ['default:read', 'default:write']);
+		assert.deepStrictEqual(await provider.getSessions([], { silent: true }), [grant]);
 	});
 
 	test('does not rotate the client while silently refreshing a token', async () => {
@@ -256,6 +408,34 @@ suite('DynamicAuthProvider', () => {
 			clientId: 'client-id',
 		});
 	});
+
+	for (const rotate of [false, true]) {
+		test(`serializes OAuth refresh with ${rotate ? 'a replacement' : 'the original'} refresh token`, async () => {
+			const refreshes: (string | null)[] = [];
+			const provider = createProvider({
+				...servers.nonMicrosoft,
+				resource,
+				initialTokens: [{
+					access_token: 'expired-token', token_type: 'Bearer', scope: 'read', expires_in: 1,
+					created_at: 0, refresh_token: 'original-refresh', id_token: jwt({ sub: 'fixture-account' }),
+				}],
+				fetcher: async (_input, init) => {
+					const params = new URLSearchParams(String(init?.body));
+					refreshes.push(params.get('refresh_token'));
+					const first = refreshes.length === 1;
+					return Response.json({
+						access_token: first ? 'first-access' : 'second-access', token_type: 'Bearer',
+						expires_in: first ? 1 : 3600, ...(first && rotate ? { refresh_token: 'rotated-refresh' } : {}),
+					});
+				},
+			});
+			const results = await Promise.all([provider.getSessions(['read'], { silent: true }), provider.getSessions(['read'], { silent: true }), provider.getSessions(['read'], { silent: true })]);
+			assert.deepStrictEqual({ refreshes, sessions: results.map(([session]) => [session?.accessToken, session?.account.id]) }, {
+				refreshes: ['original-refresh', rotate ? 'rotated-refresh' : 'original-refresh'],
+				sessions: [['first-access', 'fixture-account'], ['second-access', 'fixture-account'], ['second-access', 'fixture-account']],
+			});
+		});
+	}
 
 	test('refresh sends scope without resource for Microsoft auth, and resource without scope otherwise', async () => {
 		const results: Record<string, { body: Record<string, string>; scopes: (readonly string[])[] }> = {};
@@ -308,11 +488,14 @@ suite('DynamicAuthProvider', () => {
 		});
 	});
 
-	for (const { name, methods, clientSecret, useBasic } of [
+	for (const { name, methods, clientSecret, useBasic, registeredMethod } of [
 		{ name: 'HTTP Basic', methods: ['client_secret_basic'], clientSecret: 'secret+%:雪', useBasic: true },
 		{ name: 'form credentials', methods: ['client_secret_basic', 'client_secret_post'], clientSecret: 'legacy-secret', useBasic: false },
 		{ name: 'legacy discovery', methods: undefined, clientSecret: 'legacy-secret', useBasic: false },
 		{ name: 'public client', methods: ['client_secret_basic', 'none'], clientSecret: undefined, useBasic: false },
+		{ name: 'registered HTTP Basic when both methods are advertised', methods: ['client_secret_basic', 'client_secret_post'], clientSecret: 'secret+%:雪', useBasic: true, registeredMethod: 'client_secret_basic' },
+		{ name: 'registered form credentials when discovery lists only HTTP Basic', methods: ['client_secret_basic'], clientSecret: 'registered-secret', useBasic: false, registeredMethod: 'client_secret_post' },
+		{ name: 'registered public client even with a returned secret', methods: ['client_secret_basic', 'none'], clientSecret: 'unused-secret', useBasic: false, registeredMethod: 'none' },
 	]) {
 		test(`uses ${name} for both code exchange and refresh without tracing credentials`, async () => {
 			const clientId = 'example:id +';
@@ -326,6 +509,7 @@ suite('DynamicAuthProvider', () => {
 				resource,
 				clientId,
 				clientSecret,
+				tokenEndpointAuthMethod: registeredMethod,
 				trace,
 				initialTokens: [{ access_token: jwt({ sub: 'account', jti: 'expired' }), token_type: 'Bearer', scope: 'read', expires_in: 1, refresh_token: 'test-refresh-token', created_at: 0 }],
 				fetcher: async (url, init) => {
@@ -340,8 +524,9 @@ suite('DynamicAuthProvider', () => {
 			assert.deepStrictEqual(refreshed.map(session => session.accessToken), [accessToken]);
 
 			const authorization = useBasic ? `Basic ${encodeBase64(VSBuffer.fromString('example%3Aid+%2B:secret%2B%25%3A%E9%9B%AA'))}` : null;
-			const credentials = useBasic ? {} : { client_id: clientId, ...(clientSecret ? { client_secret: clientSecret } : {}) };
-			const request = { url: tokenEndpoint, method: 'POST', authorization, redirect: useBasic ? 'error' : undefined };
+			const sentSecret = registeredMethod === 'none' ? undefined : clientSecret;
+			const credentials = useBasic ? {} : { client_id: clientId, ...(sentSecret ? { client_secret: sentSecret } : {}) };
+			const request = { url: tokenEndpoint, method: 'POST', authorization, redirect: sentSecret ? 'error' : undefined };
 			assert.deepStrictEqual(requests, [
 				{ ...request, body: { ...credentials, grant_type: 'authorization_code', code: 'test-code', code_verifier: 'test-verifier', redirect_uri: 'http://127.0.0.1:40000/callback', resource } },
 				{ ...request, body: { ...credentials, grant_type: 'refresh_token', refresh_token: 'test-refresh-token', resource } },
@@ -350,17 +535,36 @@ suite('DynamicAuthProvider', () => {
 		});
 	}
 
-	test('refuses to send Basic credentials to a plaintext token endpoint', async () => {
-		const provider = createProvider({
-			...servers.nonMicrosoft,
-			serverMetadata: { ...servers.nonMicrosoft.serverMetadata, token_endpoint: 'http://auth.example.com/token', token_endpoint_auth_methods_supported: ['client_secret_basic'] },
-			resource,
-			clientSecret: 'test-secret',
-			fetcher: async () => assert.fail('No token request should be sent'),
+	for (const { method, clientSecret, expected } of [
+		{ method: 'private_key_jwt', clientSecret: 'unused-secret', expected: /unsupported token authentication method/ },
+		{ method: 'client_secret_basic', clientSecret: undefined, expected: /requires a client secret/ },
+		{ method: 'client_secret_post', clientSecret: undefined, expected: /requires a client secret/ },
+	]) {
+		test(`rejects unusable registration for ${method} before sending the browser grant`, async () => {
+			const provider = createProvider({
+				...servers.nonMicrosoft,
+				resource,
+				clientSecret,
+				tokenEndpointAuthMethod: method,
+				fetcher: async () => assert.fail('No token request should be sent'),
+			});
+			await assert.rejects(provider.exchangeTestCode('test-code', 'test-verifier', 'http://127.0.0.1/callback'), expected);
 		});
+	}
 
-		await assert.rejects(provider.exchangeTestCode('test-code', 'test-verifier', 'http://127.0.0.1/callback'), /requires an HTTPS token endpoint/);
-	});
+	for (const method of ['client_secret_basic', 'client_secret_post']) {
+		test(`refuses to send ${method} credentials to a plaintext token endpoint`, async () => {
+			const provider = createProvider({
+				...servers.nonMicrosoft,
+				serverMetadata: { ...servers.nonMicrosoft.serverMetadata, token_endpoint: 'http://auth.example.com/token', token_endpoint_auth_methods_supported: [method] },
+				resource,
+				clientSecret: 'test-secret',
+				fetcher: async () => assert.fail('No token request should be sent'),
+			});
+
+			await assert.rejects(provider.exchangeTestCode('test-code', 'test-verifier', 'http://127.0.0.1/callback'), /requires an HTTPS token endpoint/);
+		});
+	}
 
 	test('authorization URL requests offline_access when advertised and omits resource for Microsoft auth', async () => {
 		const results: Record<string, { scope: string | null; resource: string | null; prompt: string | null }> = {};
@@ -419,6 +623,7 @@ suite('DynamicAuthProvider', () => {
 		assert.strictEqual(opened.length, 1);
 		assert.strictEqual(opened[0].searchParams.get('access_type'), 'offline');
 		assert.strictEqual(opened[0].searchParams.get('prompt'), 'consent');
+		assert.strictEqual(opened[0].searchParams.get('scope'), 'read openid');
 		assert.ok(!opened[0].searchParams.has('client_secret'));
 		await registered.exchangeTestCode('fixture-code', 'fixture-verifier', 'http://127.0.0.1:33418/');
 		assert.strictEqual(requests[0].redirect, 'error');
@@ -481,6 +686,27 @@ suite('DynamicAuthProvider', () => {
 			assert.deepStrictEqual(refreshes, ['fixture-refresh', 'fixture-refresh']);
 		});
 	}
+
+	test('keeps the refreshed Outlook grant read-only when Graph returns Mail.Read without Mail.Send', async () => {
+		const { issuer, authorize, token, resource, scope, sendScope } = signalCMailOAuth.outlook;
+		const identity = ['openid', 'profile', 'offline_access'];
+		const requested = [scope, sendScope, ...identity];
+		const provider = createProvider({
+			authorizationServer: issuer,
+			serverMetadata: { issuer, authorization_endpoint: authorize, token_endpoint: token, response_types_supported: ['code'] },
+			resource,
+			providerId: `${signalCMailOAuthPrefix}outlook:isolated`,
+			initialTokens: [{
+				access_token: 'expired-token', token_type: 'Bearer', scope: requested.join(' '),
+				id_token: jwt({ sub: 'mail-account' }), expires_in: 1, created_at: 0, refresh_token: 'fixture-refresh',
+			}],
+			fetcher: async () => Response.json({ access_token: 'read-only-token', token_type: 'Bearer', scope: 'Mail.Read', expires_in: 3600 }),
+		});
+		assert.deepStrictEqual(await provider.getSessions(requested, { silent: true }), []);
+		const [readGrant] = await provider.getSessions([scope, ...identity], { silent: true });
+		assert.strictEqual(readGrant?.account.id, 'mail-account');
+		assert.deepStrictEqual(readGrant.scopes, [scope, ...identity]);
+	});
 
 	for (const failure of [new CancellationError(), new Error('Browser authorization failed')]) {
 		test(`preserves the final authentication flow error: ${failure.message}`, async () => {

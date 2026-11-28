@@ -482,6 +482,7 @@ function createServer(
 			return { state: McpConnectionState.Kind.Running };
 		},
 		stop: async () => { },
+		withServerStopped: task => task(),
 		cacheState,
 		tools,
 		prompts: observableValue(owner, []),
@@ -525,6 +526,7 @@ function createNeverStartingServer(
 			return new Promise<McpConnectionState>(() => { });
 		},
 		stop: async () => { },
+		withServerStopped: task => task(),
 		cacheState,
 		tools,
 		prompts: observableValue(owner, []),

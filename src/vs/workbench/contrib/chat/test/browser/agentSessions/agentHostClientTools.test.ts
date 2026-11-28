@@ -130,6 +130,7 @@ suite('AgentHostClientTools', () => {
 		const instantiationService = disposables.add(new TestInstantiationService());
 		const fileService = new TestFileService();
 		instantiationService.stub(IFileService, fileService);
+		instantiationService.stub(IWorkspaceContextService, { getWorkspaceFolder: () => null });
 		instantiationService.stub(IAgentHostFileSystemService, {
 			ensureSyncedCustomizationProvider: () => { },
 		});
@@ -620,6 +621,37 @@ suite('AgentHostClientTools', () => {
 			snapshots: 2,
 		});
 	});
+	for (const provider of ['reach', 'cohere']) {
+		test(`${provider} publishes distinct registry tools and limits workspace MCP tools to the owning folder`, async () => {
+			const root = URI.file('/project');
+			const collection: McpCollectionDefinition = {
+				id: 'mcp.config.ws-project', label: 'Project tools', order: 0, remoteAuthority: null,
+				presentation: { origin: URI.joinPath(root, '.vscode', 'mcp.json') },
+				serverDefinitions: constObservable([]), trustBehavior: McpServerTrust.Kind.Trusted,
+				scope: StorageScope.WORKSPACE, configTarget: ConfigurationTarget.WORKSPACE_FOLDER,
+			};
+			const definition: McpServerDefinition = {
+				id: 'github', label: 'GitHub', cacheNonce: 'fixture',
+				launch: { type: McpServerTransportType.Stdio, command: 'fixture', args: [], env: {}, envFile: undefined, cwd: undefined, sandbox: undefined },
+			};
+			const server = new class extends mock<IMcpServer>() {
+				override readonly collection = collection;
+				override readonly definition = definition;
+				override readonly enablement = constObservable(ContributionEnablementState.EnabledWorkspace);
+				override readDefinitions() { return constObservable({ collection, server: definition }); }
+			}();
+			const publicTools = [mcpCreatePullRequestTool, createPullRequestTool].map(tool => ({ ...tool, canBeReferencedInPrompt: true }));
+			const { service } = createActiveClientService(constObservable([...publicTools, readFileTool]), constObservable([]), { servers: [server] });
+			const namesIn = async (roots: readonly URI[]) => {
+				const scope = disposables.add(service.acquireScope(`agent-host-${provider}`, roots));
+				await scope.whenResolved();
+				return scope.tools.get().map(tool => tool.name);
+			};
+			assert.deepStrictEqual(await namesIn([root]), publicTools.map(tool => tool.id));
+			assert.deepStrictEqual(await namesIn([URI.file('/another-project')]), [createPullRequestTool.id]);
+			assert.deepStrictEqual(await namesIn([]), [createPullRequestTool.id]);
+		});
+	}
 
 	// ── toolDataToDefinition ─────────────────────────────────────────────
 
@@ -931,7 +963,8 @@ suite('AgentHostClientTools', () => {
 							throw new CancellationError();
 						}
 					} else {
-						const prepared = toolInvocation?.toolSpecificData?.kind === 'subagent'
+						const asksForResult = tools.find(tool => tool.id === invocation.toolId)?.canRequestPostApproval;
+						const prepared = asksForResult ? { confirmationMessages: { title: 'Share result', message: 'Share the result?', confirmResults: true } } : toolInvocation?.toolSpecificData?.kind === 'subagent'
 							? {
 								invocationMessage: 'Delegating task',
 								toolSpecificData: {
@@ -946,7 +979,10 @@ suite('AgentHostClientTools', () => {
 					const result: IToolResult = options?.invokeResult
 						? await options.invokeResult.p
 						: { content: [{ kind: 'text', value: 'done' }] };
-					await toolInvocation?.didExecuteTool(result);
+					const state = await toolInvocation?.didExecuteTool(result);
+					if (state?.type === IChatToolInvocation.StateKind.WaitingForPostApproval && toolInvocation) {
+						await IChatToolInvocation.awaitPostConfirmation(toolInvocation, token ?? CancellationToken.None);
+					}
 					return result;
 				},
 				beginToolCall: options => {
@@ -1008,6 +1044,7 @@ suite('AgentHostClientTools', () => {
 		}
 
 		class MockAgentHostConnection extends mock<IAgentHostService>() {
+			constructor(private readonly testProvider: string) { super(); }
 			declare readonly _serviceBrand: undefined;
 			override readonly clientId = 'test-client';
 			private readonly _onDidAction = disposables.add(new Emitter<ActionEnvelope>());
@@ -1028,14 +1065,14 @@ suite('AgentHostClientTools', () => {
 			public readonly resourceReadResponses = new Map<string, Promise<{ data: string; encoding: ContentEncoding }>>();
 
 			override async listSessions() {
-				const sessions = new Set([AgentSession.uri('copilot', 'session-1').toString()]);
+				const sessions = new Set([AgentSession.uri(this.testProvider, 'session-1').toString()]);
 				for (const [resource, entry] of this._liveSubscriptions) {
 					const parent = mintedTestChatOwner(resource);
 					if (parent || hasKey(entry.state, { provider: true })) {
 						sessions.add(parent ?? resource);
 					}
 				}
-				return [...sessions].map(resource => ({ session: URI.parse(resource), provider: 'copilot', startTime: 0, modifiedTime: 0 }));
+				return [...sessions].map(resource => ({ session: URI.parse(resource), provider: this.testProvider, startTime: 0, modifiedTime: 0 }));
 			}
 
 			override async resourceRead(uri: URI) {
@@ -1137,7 +1174,7 @@ suite('AgentHostClientTools', () => {
 				assert.ok(sessionResource, `chat subscriptions must use an ahp-chat channel: ${resourceStr}`);
 				const summary: SessionSummary = {
 					resource: sessionResource,
-					provider: 'copilot',
+					provider: this.testProvider,
 					title: 'Test',
 					status: SessionStatus.Idle,
 					createdAt: new Date().toISOString(),
@@ -1165,7 +1202,8 @@ suite('AgentHostClientTools', () => {
 			sessionType: string = AGENT_HOST_COPILOT_CLI_SESSION_TYPE,
 		) {
 			const instantiationService = disposables.add(new TestInstantiationService());
-			const connection = new MockAgentHostConnection();
+			const provider = ['agent-host-reach', 'agent-host-cohere'].includes(sessionType) ? sessionType.slice('agent-host-'.length) : 'copilot';
+			const connection = new MockAgentHostConnection(provider);
 
 			instantiationService.stub(IAccessibilitySignalService, {
 				playSignal: async () => { },
@@ -1336,8 +1374,8 @@ suite('AgentHostClientTools', () => {
 			} satisfies IAgentHostMcpAppToolsService);
 
 			const handler = disposables.add(instantiationService.createInstance(AgentHostSessionHandler, {
-				provider: 'copilot' as const,
-				agentId: 'agent-host-copilot',
+				provider,
+				agentId: `agent-host-${provider}`,
 				sessionType,
 				fullName: 'Test',
 				description: 'Test',
@@ -1531,6 +1569,29 @@ suite('AgentHostClientTools', () => {
 					? { confirmationTitle: 'Run Task' }
 					: { confirmed }),
 			});
+		}
+
+		for (const provider of ['reach', 'cohere']) {
+			test(`${provider} completes a declined result without sharing the held output`, () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+				const tool = { ...testRunTaskTool, id: 'runTask', canBeReferencedInPrompt: true, canRequestPostApproval: true };
+				const { handler, connection, toolsService } = createHandlerWithMocks(disposables, [tool], undefined, `agent-host-${provider}`);
+				const sessionResource = URI.parse(`agent-host-${provider}:/session-1`);
+				const backend = AgentSession.uri(provider, 'session-1');
+				const chatURI = URI.parse(buildDefaultChatUri(backend.toString()));
+				const chat = disposables.add(await handler.provideChatSessionContent(sessionResource, CancellationToken.None));
+				await chat.prepareForClientTools!(CancellationToken.None);
+				applyReferencedRunTask(connection, chatURI, '{}', ToolCallConfirmationReason.NotNeeded);
+				applyRunningClientExecution(connection, chatURI.toString(), 'turn-1', {
+					toolCallId: 'tool-call-1', toolName: tool.id, displayName: 'Run Task', invocationMessage: 'Run task', toolInput: '{}',
+				}, backend);
+				await timeout(0);
+				const state = toolsService.begunToolCalls[0]?.state.get();
+				assert.strictEqual(state?.type, IChatToolInvocation.StateKind.WaitingForPostApproval);
+				state.confirm({ type: ToolConfirmKind.Denied });
+				await timeout(0);
+				const completions = connection.dispatchedActions.flatMap(({ action }) => action.type === ActionType.ChatToolCallComplete ? [action.result] : []);
+				assert.deepStrictEqual(completions.map(result => [result.success, result.error?.code, result.content]), [[false, 'tool-result-denied', undefined]]);
+			}));
 		}
 
 		test('publishes live app tools after base and session tools without overriding them', async () => {

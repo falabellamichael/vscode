@@ -41,6 +41,7 @@ import { ISessionGroupsService } from '../../browser/sessionGroupsService.js';
 import { ISavedSessionDraftTarget } from '../../common/savedSessionDrafts.js';
 import { ChatInputCanScheduleContext } from '../../common/contextkeys.js';
 import { SESSIONS_DRAFTS_ENABLED_SETTING, SESSIONS_SEND_LATER_ENABLED_SETTING } from '../../common/sessionConfig.js';
+import { SESSION_OUTPUT_TYPE_META_KEY } from '../../../chat/common/sessionOutputType.js';
 import { ISessionsChangeEvent, ISessionsManagementService } from '../../common/sessionsManagement.js';
 
 suite('Scheduled chat handoffs', () => {
@@ -576,6 +577,35 @@ suite('Scheduled chat handoffs', () => {
 				{ type: 'simple', label: 'Added', modelRepresentation: 'new content' },
 			],
 			recoveryIds: ['keep', 'new'], saving: false,
+		});
+	});
+
+	test('scheduled edits keep hidden send context as request context', async () => {
+		const fixture = create();
+		const conversation = { sessionResource: URI.parse('agent-host-copilot:/session'), chatResource: URI.parse('agent-host-copilot:/session/secondary') };
+		await fixture.service.schedule({
+			inputText: 'Build the site',
+			attachments: [],
+			sendContext: [{ kind: 'promptText', id: 'session-output:website', name: 'Requested output', value: 'Build a website.', modelDescription: 'Requested deliverable', automaticallyAdded: true }],
+		}, target, session, 'composition', conversation);
+		await fixture.service.items.get()[0].editAction!.run();
+		const editing = fixture.service.items.get()[0].editing!;
+		const restoredSendContext = editing.input?.sendContext?.map(entry => entry.id);
+		editing.input = {
+			...editing.input!,
+			sendContext: [{ kind: 'promptText', id: 'session-output:slides', name: 'Requested output', value: 'Build a slide deck.', modelDescription: 'Requested deliverable', automaticallyAdded: true }],
+		};
+		editing.text = 'Build the updated site';
+		await editing.save();
+		const stored = parse(fixture.storage.get('sessions.scheduledChatHandoffs', StorageScope.PROFILE)!).handoffs[0];
+		assert.deepStrictEqual({
+			restoredSendContext,
+			request: fixture.automations.get()[0].request,
+			recoverySendContext: stored.input.sendContext?.map((entry: { id: string }) => entry.id),
+		}, {
+			restoredSendContext: ['session-output:website'],
+			request: { text: 'Build the updated site', origin: { kind: 'user' }, attachments: [{ type: 'simple', label: 'Requested output', modelRepresentation: 'Build a slide deck.' }], _meta: { [SESSION_OUTPUT_TYPE_META_KEY]: 'slides' } },
+			recoverySendContext: ['session-output:slides'],
 		});
 	});
 

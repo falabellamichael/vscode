@@ -14,7 +14,7 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { InMemoryStorageService } from '../../../../../platform/storage/common/storage.js';
 import { IUserDataProfileService } from '../../../../../workbench/services/userDataProfile/common/userDataProfile.js';
 import { IReachSubscriptionConnection } from '../../../accountMenu/browser/reachSubscriptionConnection.js';
-import { AssistantBriefingScheduler, parseAssistantBriefingTime } from '../../browser/assistantBriefingScheduler.js';
+import { AssistantBriefingOutcome, AssistantBriefingScheduler, parseAssistantBriefingTime } from '../../browser/assistantBriefingScheduler.js';
 import { IAssistantRuns } from '../../browser/assistantRuns.js';
 
 suite('AssistantBriefingScheduler', () => {
@@ -31,7 +31,7 @@ suite('AssistantBriefingScheduler', () => {
 		const calls: string[] = [];
 		const runs = upcastPartial<IAssistantRuns>({
 			getPending: () => undefined,
-			sendScheduledBriefing: async (accountId, period) => { calls.push(`${accountId}:${period}`); return true; },
+			sendScheduledBriefing: async (accountId, period) => { calls.push(`${accountId}:${period}`); return 'completed'; },
 		});
 		const profileId = generateUuid();
 		const makeScheduler = (id: string) => disposables.add(new AssistantBriefingScheduler(
@@ -52,6 +52,8 @@ suite('AssistantBriefingScheduler', () => {
 		assert.deepStrictEqual(calls, [`${account.id}:morning`]);
 		const [next] = await first.getSchedules(account.id);
 		assert.ok(next.nextAt > schedule.nextAt);
+		assert.strictEqual(next.lastRun?.status, 'completed');
+		assert.strictEqual(next.lastRun?.attempt, 1);
 		await second.setSchedule(account.id, 'morning', undefined);
 		await first.checkDue(next.nextAt);
 		assert.deepStrictEqual(calls, [`${account.id}:morning`]);
@@ -73,16 +75,22 @@ suite('AssistantBriefingScheduler', () => {
 		const calls: string[] = [];
 		const manualStarted = new DeferredPromise<string>();
 		const completeManual = new DeferredPromise<'completed'>();
+		const emailDelivery = { connectionId: 'work-mail', recipient: 'recipient@example.test' };
 		const runs = upcastPartial<IAssistantRuns>({
 			getPending: () => undefined,
-			sendScheduledRoutine: async (accountId, routine, runId) => {
+			sendScheduledRoutine: async (accountId, routine, runId, canDeliverEmail) => {
 				assert.strictEqual(accountId, account.id);
 				assert.deepStrictEqual(routine.serverIds, ['work-mail']);
 				calls.push(routine.prompt);
 				if (calls.length === 1) {
+					assert.deepStrictEqual(routine.emailDelivery, emailDelivery);
+					assert.strictEqual(await canDeliverEmail?.(), true);
 					await manualStarted.complete(runId);
-					return completeManual.p;
+					await completeManual.p;
+					assert.strictEqual(await canDeliverEmail?.(), false);
+					return 'completed';
 				}
+				assert.strictEqual(routine.emailDelivery, undefined);
 				return 'needsAttention';
 			},
 		});
@@ -93,9 +101,10 @@ suite('AssistantBriefingScheduler', () => {
 		const second = disposables.add(new AssistantBriefingScheduler(reach, runs, profile, storage, new NullLogService()));
 		const settings = { name: 'Open requests', prompt: 'Find open requests', serverIds: ['work-mail'], cadence: 'weekdays' as const, hour: 8, minute: 30 };
 		await first.setSchedule(account.id, 'morning', { hour: 8, minute: 15 });
-		assert.strictEqual(await first.saveRoutine(account.id, settings), true);
+		assert.strictEqual(await first.saveRoutine(account.id, { ...settings, emailDelivery }), true);
 		assert.deepStrictEqual((await second.getSchedules(account.id)).map(item => item.period), ['morning']);
 		const [routine] = await second.getRoutines(account.id);
+		assert.deepStrictEqual(routine.emailDelivery, emailDelivery);
 		assert.strictEqual(routine.lastRun, undefined);
 		const formatter = safeIntl.DateTimeFormat('en', { weekday: 'short', timeZone: routine.timeZone }).value;
 		const weekday = (epoch: number) => formatter.format(epoch);
@@ -171,5 +180,135 @@ suite('AssistantBriefingScheduler', () => {
 		const [recovered] = await second.getRoutines(account.id);
 		assert.deepStrictEqual(recovered.lastRun, { ...running.lastRun, status: 'interrupted' });
 		assert.strictEqual(recovered.nextAt, routine.nextAt);
+	});
+
+	test('retries a transient briefing failure once and persists each attempt', async () => {
+		const storage = disposables.add(new InMemoryStorageService());
+		const account = { id: generateUuid(), subscriptionActive: true };
+		const reach = upcastPartial<IReachSubscriptionConnection>({
+			assistantSupported: false, onDidChangeAccount: Event.None, getAccount: async () => account,
+		});
+		const calls: string[] = [];
+		let outcome: AssistantBriefingOutcome = 'retryable';
+		const runs = upcastPartial<IAssistantRuns>({
+			getPending: () => undefined,
+			sendScheduledBriefing: async (accountId, period) => { calls.push(`${accountId}:${period}`); return outcome; },
+		});
+		const profile = upcastPartial<IUserDataProfileService>({
+			currentProfile: upcastPartial<IUserDataProfileService['currentProfile']>({ id: generateUuid() }),
+		});
+		const first = disposables.add(new AssistantBriefingScheduler(reach, runs, profile, storage, new NullLogService()));
+		const second = disposables.add(new AssistantBriefingScheduler(reach, runs, profile, storage, new NullLogService()));
+		await first.setSchedule(account.id, 'morning', { hour: 8, minute: 15 });
+		const [schedule] = await second.getSchedules(account.id);
+		await first.checkDue(schedule.nextAt);
+		assert.deepStrictEqual(calls, [`${account.id}:morning`]);
+		const [attemptOne] = await second.getSchedules(account.id);
+		assert.strictEqual(attemptOne.lastRun?.status, 'failed');
+		assert.strictEqual(attemptOne.lastRun?.attempt, 1);
+		assert.strictEqual(attemptOne.lastRun?.startedAt, schedule.nextAt);
+		const retryAt = attemptOne.lastRun?.retryAt;
+		assert.ok(retryAt !== undefined && retryAt > schedule.nextAt && retryAt < attemptOne.nextAt);
+		assert.ok(attemptOne.nextAt > schedule.nextAt);
+		await first.checkDue(retryAt - 1);
+		assert.strictEqual(calls.length, 1);
+		await Promise.all([first.checkDue(retryAt), second.checkDue(retryAt)]);
+		assert.strictEqual(calls.length, 2);
+		const [attemptTwo] = await first.getSchedules(account.id);
+		assert.strictEqual(attemptTwo.lastRun?.status, 'failed');
+		assert.strictEqual(attemptTwo.lastRun?.attempt, 2);
+		assert.strictEqual(attemptTwo.lastRun?.retryAt, undefined);
+		assert.strictEqual(attemptTwo.lastRun?.startedAt, retryAt);
+		assert.strictEqual(attemptTwo.nextAt, attemptOne.nextAt);
+		await first.checkDue(attemptTwo.nextAt - 1);
+		assert.strictEqual(calls.length, 2);
+	});
+
+	test('does not replay an ordinary briefing failure', async () => {
+		const storage = disposables.add(new InMemoryStorageService());
+		const account = { id: generateUuid(), subscriptionActive: true };
+		const reach = upcastPartial<IReachSubscriptionConnection>({
+			assistantSupported: false, onDidChangeAccount: Event.None, getAccount: async () => account,
+		});
+		const calls: string[] = [];
+		const runs = upcastPartial<IAssistantRuns>({
+			getPending: () => undefined,
+			sendScheduledBriefing: async (accountId, period) => { calls.push(`${accountId}:${period}`); return 'failed'; },
+		});
+		const profile = upcastPartial<IUserDataProfileService>({
+			currentProfile: upcastPartial<IUserDataProfileService['currentProfile']>({ id: generateUuid() }),
+		});
+		const first = disposables.add(new AssistantBriefingScheduler(reach, runs, profile, storage, new NullLogService()));
+		await first.setSchedule(account.id, 'morning', { hour: 8, minute: 15 });
+		const [schedule] = await first.getSchedules(account.id);
+		await first.checkDue(schedule.nextAt);
+		assert.deepStrictEqual(calls, [`${account.id}:morning`]);
+		const [finished] = await first.getSchedules(account.id);
+		assert.strictEqual(finished.lastRun?.status, 'failed');
+		assert.strictEqual(finished.lastRun?.attempt, 1);
+		assert.strictEqual(finished.lastRun?.retryAt, undefined);
+		await first.checkDue(schedule.nextAt + 61_000);
+		assert.strictEqual(calls.length, 1);
+	});
+
+	test('does not write a briefing outcome over a schedule edited while it ran', async () => {
+		const storage = disposables.add(new InMemoryStorageService());
+		const account = { id: generateUuid(), subscriptionActive: true };
+		const reach = upcastPartial<IReachSubscriptionConnection>({
+			assistantSupported: false, onDidChangeAccount: Event.None, getAccount: async () => account,
+		});
+		const started = new DeferredPromise<void>();
+		const gate = new DeferredPromise<'completed'>();
+		const runs = upcastPartial<IAssistantRuns>({
+			getPending: () => undefined,
+			sendScheduledBriefing: async () => { await started.complete(); return gate.p; },
+		});
+		const profile = upcastPartial<IUserDataProfileService>({
+			currentProfile: upcastPartial<IUserDataProfileService['currentProfile']>({ id: generateUuid() }),
+		});
+		const first = disposables.add(new AssistantBriefingScheduler(reach, runs, profile, storage, new NullLogService()));
+		await first.setSchedule(account.id, 'morning', { hour: 8, minute: 15 });
+		const [schedule] = await first.getSchedules(account.id);
+		const dispatch = first.checkDue(schedule.nextAt);
+		await started.p;
+		await first.setSchedule(account.id, 'morning', { hour: 9, minute: 30 });
+		await gate.complete('completed');
+		await dispatch;
+		const [edited] = await first.getSchedules(account.id);
+		assert.strictEqual(edited.hour, 9);
+		assert.strictEqual(edited.minute, 30);
+		assert.strictEqual(edited.lastRun, undefined);
+	});
+
+	test('preserves an interrupted briefing attempt across scheduler restart', async () => {
+		const storage = disposables.add(new InMemoryStorageService());
+		const account = { id: generateUuid(), subscriptionActive: true };
+		const reach = upcastPartial<IReachSubscriptionConnection>({
+			assistantSupported: false, onDidChangeAccount: Event.None, getAccount: async () => account,
+		});
+		const started = new DeferredPromise<void>();
+		const gate = new DeferredPromise<'completed'>();
+		const runs = upcastPartial<IAssistantRuns>({
+			getPending: () => undefined,
+			sendScheduledBriefing: async () => { await started.complete(); return gate.p; },
+		});
+		const profile = upcastPartial<IUserDataProfileService>({
+			currentProfile: upcastPartial<IUserDataProfileService['currentProfile']>({ id: generateUuid() }),
+		});
+		const first = disposables.add(new AssistantBriefingScheduler(reach, runs, profile, storage, new NullLogService()));
+		await first.setSchedule(account.id, 'morning', { hour: 8, minute: 15 });
+		const [schedule] = await first.getSchedules(account.id);
+		const dispatch = first.checkDue(schedule.nextAt);
+		await started.p;
+		const [running] = await first.getSchedules(account.id);
+		assert.strictEqual(running.lastRun?.status, 'running');
+		first.dispose();
+		await gate.complete('completed');
+		await dispatch;
+		const second = disposables.add(new AssistantBriefingScheduler(reach, runs, profile, storage, new NullLogService()));
+		const [recovered] = await second.getSchedules(account.id);
+		assert.strictEqual(recovered.lastRun?.status, 'interrupted');
+		assert.strictEqual(recovered.lastRun?.attempt, 1);
+		assert.strictEqual(recovered.nextAt, running.nextAt);
 	});
 });

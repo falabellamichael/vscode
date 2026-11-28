@@ -4,12 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { generateUuid } from '../../../../base/common/uuid.js';
-import type { URI } from '../../../../base/common/uri.js';
+import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import type { IAgentModelCallCompletedSignal } from '../../common/agent.js';
 import { toToolCallMeta } from '../../common/meta/agentToolCallMeta.js';
 import { ActionType, type SessionAction, type ChatAction } from '../../common/state/sessionActions.js';
-import { createErrorResponsePart, MessageKind, ResponsePartKind, ToolCallConfirmationReason, ToolCallContributorKind, ToolResultContentType, TurnState, type ErrorInfo } from '../../common/state/sessionState.js';
+import { createErrorResponsePart, MessageKind, ResponsePartKind, ToolCallConfirmationReason, ToolCallContributorKind, ToolResultContentType, TurnState, type ErrorInfo, type ToolResultContent } from '../../common/state/sessionState.js';
 import { extractForwardedErrorInfo } from '../shared/proxyChatError.js';
 import { getServerToolDisplay } from '../shared/serverToolGroups.js';
 import { ActiveClientToolSet } from '../activeClientState.js';
@@ -34,6 +34,7 @@ import type { TurnCompletedNotification } from './protocol/generated/v2/TurnComp
 import type { TurnError } from './protocol/generated/v2/TurnError.js';
 import type { TurnStartedNotification } from './protocol/generated/v2/TurnStartedNotification.js';
 import type { UserInput } from './protocol/generated/v2/UserInput.js';
+import type { ThreadItem } from './protocol/generated/v2/ThreadItem.js';
 import type { WebSearchAction } from './protocol/generated/v2/WebSearchAction.js';
 import type { DynamicToolCallOutputContentItem } from './protocol/generated/v2/DynamicToolCallOutputContentItem.js';
 import type { JsonValue } from './protocol/generated/serde_json/JsonValue.js';
@@ -342,6 +343,19 @@ export function codexImageGenerationLabels(status?: string): { readonly displayN
 
 export function codexImageGenerationToolInput(revisedPrompt: string | null): string | undefined {
 	return revisedPrompt ? JSON.stringify({ prompt: revisedPrompt }) : undefined;
+}
+
+/** Handles inline images from older Codex items and saved files from newer ones. */
+export function codexImageGenerationResult(item: Extract<ThreadItem, { type: 'imageGeneration' }>): { success: boolean; content: ToolResultContent[] | undefined } {
+	let content: ToolResultContent[] | undefined;
+	if (item.status === 'completed') {
+		if ('result' in item && item.result) {
+			content = [{ type: ToolResultContentType.EmbeddedResource, data: item.result, contentType: 'image/png' }];
+		} else if (item.savedPath) {
+			content = [{ type: ToolResultContentType.Resource, uri: URI.file(item.savedPath).toString(), contentType: 'image/png' }];
+		}
+	}
+	return { success: item.status === 'completed' && (content !== undefined || ('fileId' in item && !!item.fileId)), content };
 }
 
 function jsonValueToText(value: JsonValue): string {
@@ -1177,7 +1191,7 @@ export function mapItemCompleted(
 		}];
 	}
 	if (params.item.type === 'imageGeneration') {
-		const success = params.item.status === 'completed' && params.item.result.length > 0;
+		const { success, content } = codexImageGenerationResult(params.item);
 		const labels = codexImageGenerationLabels(params.item.status);
 		const actions: ChatAction[] = [];
 		const toolInput = codexImageGenerationToolInput(params.item.revisedPrompt);
@@ -1198,11 +1212,7 @@ export function mapItemCompleted(
 			result: {
 				success,
 				pastTenseMessage: success ? labels.pastTenseMessage : labels.failedMessage,
-				content: success ? [{
-					type: ToolResultContentType.EmbeddedResource,
-					data: params.item.result,
-					contentType: 'image/png',
-				}] : undefined,
+				content,
 				...(success ? {} : { error: { message: labels.errorMessage } }),
 			},
 		});

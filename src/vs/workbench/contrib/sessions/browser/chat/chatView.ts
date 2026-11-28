@@ -536,6 +536,7 @@ export class ChatView extends AbstractChatView {
 						&& !session.isArchived.read(reader) && !!session.capabilities.read(reader).supportsSideChat;
 				}),
 				renderSecondaryToolbar: shouldRenderRunningSessionSecondaryToolbar(initiallyUsesExperimentalComposerLayout),
+				outputTypePicker: true,
 				inputEditorMinLines: options.input?.minLines ?? 2,
 				inputPlaceholder: options.input?.placeholder,
 				inputEditorOptions: options.inputEditorOptions,

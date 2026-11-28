@@ -78,30 +78,61 @@ function createLaunchOptions(repoRoot: string, workspace: string, ide: boolean, 
 	};
 }
 
+function createPrimaryLaunchOptions(repoRoot: string, workspace: string | undefined, ide: boolean, inheritedEnvironment: NodeJS.ProcessEnv, callback?: string) {
+	const { executable, environment } = createLaunchOptions(repoRoot, repoRoot, ide, inheritedEnvironment);
+	if (!environment.APPDATA) {
+		throw new Error('APPDATA is required to open your Signal-C profile.');
+	}
+	const profile = path.join(environment.APPDATA, 'Signal-C');
+	delete environment.CODEX_HOME;
+	delete environment.CLAUDE_CONFIG_DIR;
+	if (inheritedEnvironment.CODEX_HOME) { environment.CODEX_HOME = inheritedEnvironment.CODEX_HOME; }
+	if (inheritedEnvironment.CLAUDE_CONFIG_DIR) { environment.CLAUDE_CONFIG_DIR = inheritedEnvironment.CLAUDE_CONFIG_DIR; }
+	environment.VSCODE_SIGNAL_C_PRIMARY = '1';
+	const args = [repoRoot, '--user-data-dir', profile, '--disable-extension=vscode.vscode-api-tests'];
+	if (callback !== undefined) {
+		if (!/^signal-c:\/\//i.test(callback) || /["\u0000-\u0020]/.test(callback) || !URL.canParse(callback)) {
+			throw new Error('Invalid Signal-C callback URL.');
+		}
+		args.push('--open-url', '--', callback);
+	} else {
+		if (!ide) { args.push('--agents'); }
+		if (workspace) { args.push(workspace); }
+	}
+	return { executable, args, profile, agentHomes: [], environment };
+}
+
 function main() {
-	const args = minimist(process.argv.slice(2), { boolean: ['help', 'ide', 'optimized', 'dry-run'], string: ['workspace', 'optimized-build'] });
+	const args = minimist(process.argv.slice(2), { boolean: ['help', 'ide', 'optimized', 'dry-run', 'primary'], string: ['workspace', 'optimized-build', 'open-url'] });
 	if (args.help) {
-		console.log('node scripts/code-agent-workspace.ts [--ide] [--optimized [--optimized-build <folder>]] [--workspace <folder>] [--dry-run]\nLaunch Signal-C (Signal-Connections) with separate editor, shared-storage, extension, and agent profiles. --optimized uses the packaged desktop build. --optimized-build selects a side-by-side package while retaining this checkout\'s profiles.');
+		console.log('node scripts/code-agent-workspace.ts [--primary | --optimized [--optimized-build <folder>]] [--ide] [--workspace <folder>] [--dry-run]\nLaunch the preview by default. --primary runs the checkout with the normal Signal-C profile. --optimized uses the packaged desktop build with the preview profile.');
 		return;
 	}
 	if (process.platform !== 'win32') {
 		throw new Error('This development launcher currently supports Windows.');
 	}
-	const unknown = Object.keys(args).filter(key => !['_', 'help', 'ide', 'optimized', 'optimized-build', 'dry-run', 'workspace'].includes(key));
+	const unknown = Object.keys(args).filter(key => !['_', 'help', 'ide', 'optimized', 'optimized-build', 'dry-run', 'workspace', 'primary', 'open-url'].includes(key));
 	if (unknown.length || args._.length) {
 		throw new Error('Use --workspace <folder> to select a workspace; additional editor arguments are not forwarded.');
 	}
 	if (args['optimized-build'] !== undefined && (!args.optimized || !args['optimized-build'].trim())) {
 		throw new Error('Use --optimized --optimized-build <folder> to select a packaged desktop build.');
 	}
+	const callback = args['open-url'];
+	if ((args.primary && args.optimized) || (callback !== undefined && (!args.primary || typeof callback !== 'string' || args.ide || args.workspace !== undefined))) {
+		throw new Error('Use --primary --open-url <Signal-C URL> to handle a desktop callback.');
+	}
 	const repoRoot = path.resolve(__dirname, '..');
 	const workspace = path.resolve(args.workspace ?? repoRoot);
 	if (!fs.statSync(workspace).isDirectory()) {
 		throw new Error('The workspace must be an existing directory.');
 	}
-	const options = createLaunchOptions(repoRoot, workspace, args.ide, process.env, args.optimized, args['optimized-build']);
+	const options = args.primary
+		? createPrimaryLaunchOptions(repoRoot, args.workspace === undefined ? undefined : workspace, args.ide, process.env, callback)
+		: createLaunchOptions(repoRoot, workspace, args.ide, process.env, args.optimized, args['optimized-build']);
 	if (args['dry-run']) {
-		console.log(JSON.stringify({ executable: options.executable, args: options.args }, null, 2));
+		const launchArgs = callback === undefined ? options.args : [...options.args.slice(0, -1), '<Signal-C callback>'];
+		console.log(JSON.stringify({ executable: options.executable, args: launchArgs }, null, 2));
 		return;
 	}
 	if (!fs.existsSync(options.executable)) {
@@ -110,23 +141,31 @@ function main() {
 	for (const directory of [options.profile, ...options.agentHomes]) {
 		fs.mkdirSync(directory, { recursive: true });
 	}
-	// Seed only a new isolated profile. Later user choices are preserved.
-	const settings = path.join(options.profile, 'User', 'settings.json');
-	fs.mkdirSync(path.dirname(settings), { recursive: true });
-	try {
-		fs.writeFileSync(settings, JSON.stringify({
-			'chat.agentHost.codexAgent.enabled': true,
-			'chat.agentHost.claudeAgent.enabled': false,
-		}, null, '\t') + '\n', { flag: 'wx' });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') { throw error; }
+	if (!args.primary) {
+		// Seed only a new isolated profile. Later user choices are preserved.
+		const settings = path.join(options.profile, 'User', 'settings.json');
+		fs.mkdirSync(path.dirname(settings), { recursive: true });
+		try {
+			fs.writeFileSync(settings, JSON.stringify({
+				'chat.agentHost.codexAgent.enabled': true,
+				'chat.agentHost.claudeAgent.enabled': false,
+			}, null, '\t') + '\n', { flag: 'wx' });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'EEXIST') { throw error; }
+		}
 	}
 	const child = spawn(options.executable, options.args, { cwd: repoRoot, env: options.environment, detached: true, stdio: 'ignore' });
 	child.on('error', error => { console.error(error.message); process.exitCode = 1; });
-	child.on('spawn', () => { console.log(`Opened Signal-C ${args.ide ? 'IDE' : 'Agents'} ${args.optimized ? 'optimized desktop' : 'development'} window (PID ${child.pid}).`); child.unref(); });
+	child.on('spawn', () => {
+		if (callback === undefined) {
+			const mode = args.primary ? 'primary checkout' : args.optimized ? 'optimized desktop' : 'development';
+			console.log(`Opened Signal-C ${args.ide ? 'IDE' : 'Agents'} ${mode} window (PID ${child.pid}).`);
+		}
+		child.unref();
+	});
 }
 
-module.exports = { createLaunchOptions };
+module.exports = { createLaunchOptions, createPrimaryLaunchOptions };
 if (require.main === module) {
 	try { main(); } catch (error) { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; }
 }

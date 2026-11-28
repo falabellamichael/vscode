@@ -40,8 +40,14 @@ export function getProviderMarketplaceSourceId(name: string): string {
 	return `providerPluginMarketplace.${encodeURIComponent(name)}`;
 }
 
-function createSignalCAppConnectionProvider(includeOutlook: boolean): ICustomizationMarketplaceProvider {
-	const catalog = includeOutlook ? [signalCDirectMailConnections.outlook, ...signalCAppConnections] : signalCAppConnections;
+type SignalCAppConnectionProduct = Pick<IProductService, '_serviceBrand' | 'applicationName' | 'signalCOutlookOAuthClientId' | 'signalCGmailOAuthClientFile'>;
+
+function createSignalCAppConnectionProvider(product: SignalCAppConnectionProduct): ICustomizationMarketplaceProvider {
+	const catalog = [
+		...(isUUID(product.signalCOutlookOAuthClientId ?? '') ? [signalCDirectMailConnections.outlook] : []),
+		...(product.signalCGmailOAuthClientFile ? [signalCDirectMailConnections.gmail] : []),
+		...signalCAppConnections,
+	];
 	return {
 		id: signalCAppConnectionSource.id,
 		async query({ query, mediaType, pageSize, cursor }) {
@@ -261,7 +267,7 @@ export class CustomizationMarketplaceWorkbenchService extends Disposable impleme
 		@IDefaultAccountService defaultAccountService: IDefaultAccountService,
 		@IAuthenticationService authenticationService: IAuthenticationService,
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
-		@IProductService private readonly productService: Pick<IProductService, '_serviceBrand' | 'applicationName' | 'signalCOutlookOAuthClientId'>,
+		@IProductService private readonly productService: SignalCAppConnectionProduct,
 	) {
 		super();
 		this.hasSignalCAppConnections = productService.applicationName === 'signal-c';
@@ -449,7 +455,7 @@ export class CustomizationMarketplaceWorkbenchService extends Disposable impleme
 		if (!this.service || this.serviceSignature !== signature) {
 			this.serviceSignature = signature;
 			this.service = new CustomizationMarketplaceService([
-				...(this.hasSignalCAppConnections ? [createSignalCAppConnectionProvider(isUUID(this.productService.signalCOutlookOAuthClientId ?? ''))] : []),
+				...(this.hasSignalCAppConnections ? [createSignalCAppConnectionProvider(this.productService)] : []),
 				...pluginProviders,
 				...providerMarketplaceProviders,
 				...platformProviders,

@@ -486,7 +486,10 @@ class PlaywrightSession extends Disposable {
 		if (!tab) {
 			throw new Error('Failed to get page summary');
 		}
-		return tab.getSummary(full);
+		// A page can finish navigation and then block its renderer during startup.
+		// Return a diagnostic to the caller even if the accessibility snapshot stalls.
+		const summary = await raceTimeout(tab.getSummary(full), OPEN_PAGE_NAVIGATION_TIMEOUT_MS);
+		return summary ?? 'Snapshot unavailable: the page did not respond within 30 seconds.';
 	}
 
 	private async _runAgainstPage<T>(pageId: string, callback: (page: Page) => T | Promise<T>): Promise<T> {
@@ -546,7 +549,12 @@ class PlaywrightSession extends Disposable {
 			this._logExecution(logCtx, !error);
 		}
 
-		const summary = await this._getSummary(pageId);
+		// A timer can fire while the renderer is stuck in page JavaScript. Asking that
+		// renderer for a snapshot here would prevent delivery of the polling handle.
+		// A dialog interruption still needs its summary so the caller can handle it.
+		const summary = interrupted && !error
+			? 'The page action is still running. A new snapshot will be available when the page responds.'
+			: await this._getSummary(pageId);
 		return { result, error, summary, deferredResultId };
 	}
 

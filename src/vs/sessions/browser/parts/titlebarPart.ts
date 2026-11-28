@@ -14,9 +14,10 @@ import { StandardMouseEvent } from '../../../base/browser/mouseEvent.js';
 import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
 import { DisposableStore, MutableDisposable } from '../../../base/common/lifecycle.js';
 import { RunOnceScheduler } from '../../../base/common/async.js';
+import { Color } from '../../../base/common/color.js';
 import { IThemeService } from '../../../platform/theme/common/themeService.js';
 import { agentsBackground, agentsPanelForeground } from '../../../workbench/contrib/sessions/common/theme.js';
-import { TITLE_BAR_ACTIVE_BACKGROUND, TITLE_BAR_INACTIVE_BACKGROUND, TITLE_BAR_ACTIVE_FOREGROUND, TITLE_BAR_INACTIVE_FOREGROUND } from '../../../workbench/common/theme.js';
+import { TITLE_BAR_ACTIVE_BACKGROUND, TITLE_BAR_INACTIVE_BACKGROUND, TITLE_BAR_ACTIVE_FOREGROUND, TITLE_BAR_INACTIVE_FOREGROUND, WORKBENCH_BACKGROUND } from '../../../workbench/common/theme.js';
 import { ColorThemeData } from '../../../workbench/services/themes/common/colorThemeData.js';
 import { isLinux, isMacintosh, isWeb, isNative, platformLocale } from '../../../base/common/platform.js';
 import { EventType, EventHelper, append, $, addDisposableListener, prepend, getWindow, getWindowId, AnimationFrameScheduler } from '../../../base/browser/dom.js';
@@ -448,19 +449,38 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 			const foregroundId = this.isInactive ? TITLE_BAR_INACTIVE_FOREGROUND : TITLE_BAR_ACTIVE_FOREGROUND;
 			const customizedTheme = this.theme instanceof ColorThemeData ? this.theme : undefined;
 			// A fallback theme's Agent defaults must not mask the user's title-bar palette.
-			const titleBarBackground = customizedTheme?.getColorCustomization(agentsBackground)?.toString()
-				?? customizedTheme?.getColorCustomization(backgroundId)?.toString()
-				?? this.theme.getColor(agentsBackground, false)?.toString()
-				?? this.getColor(backgroundId)
-				?? this.getColor(agentsBackground);
-			this.element.style.backgroundColor = titleBarBackground || '';
+			const titleBarBackgroundColor = customizedTheme?.getColorCustomization(agentsBackground)
+				?? customizedTheme?.getColorCustomization(backgroundId)
+				?? this.theme.getColor(agentsBackground, false)
+				?? this.theme.getColor(backgroundId)
+				?? this.theme.getColor(agentsBackground);
+			const opaqueBackground = titleBarBackgroundColor
+				? (titleBarBackgroundColor.isOpaque() ? titleBarBackgroundColor : titleBarBackgroundColor.makeOpaque(WORKBENCH_BACKGROUND(this.theme)))
+				: undefined;
+			this.element.style.backgroundColor = opaqueBackground?.toString() || '';
+			this.element.classList.toggle('light', !!opaqueBackground?.isLighter());
 
-			const titleForeground = customizedTheme?.getColorCustomization(agentsPanelForeground)?.toString()
-				?? customizedTheme?.getColorCustomization(foregroundId)?.toString()
-				?? this.theme.getColor(agentsPanelForeground, false)?.toString()
-				?? this.getColor(foregroundId)
-				?? this.getColor(agentsPanelForeground);
-			this.element.style.color = titleForeground || '';
+			const titleForegroundColor = customizedTheme?.getColorCustomization(agentsPanelForeground)
+				?? customizedTheme?.getColorCustomization(foregroundId)
+				?? this.theme.getColor(agentsPanelForeground, false)
+				?? this.theme.getColor(foregroundId)
+				?? this.theme.getColor(agentsPanelForeground);
+			let effectiveForeground = titleForegroundColor;
+			if (opaqueBackground && effectiveForeground) {
+				const renderedForeground = effectiveForeground.isOpaque() ? effectiveForeground : effectiveForeground.makeOpaque(opaqueBackground);
+				if (opaqueBackground.getContrastRatio(renderedForeground) < 3) {
+					const fallbackForeground = this.theme.getColor(foregroundId);
+					const renderedFallback = fallbackForeground
+						? (fallbackForeground.isOpaque() ? fallbackForeground : fallbackForeground.makeOpaque(opaqueBackground))
+						: undefined;
+					if (renderedFallback && opaqueBackground.getContrastRatio(renderedFallback) >= 3) {
+						effectiveForeground = fallbackForeground;
+					} else {
+						effectiveForeground = opaqueBackground.isLighter() ? Color.black : Color.white;
+					}
+				}
+			}
+			this.element.style.color = effectiveForeground?.toString() || '';
 		}
 	}
 

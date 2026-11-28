@@ -510,7 +510,7 @@ class McpGatewayRoute extends Disposable {
 			}
 
 			const responseBody = JSON.stringify(Array.isArray(message) ? responses : responses[0]);
-			this._logger.debug(`[McpGateway][route ${this.routeId}] POST response: 200, body: ${responseBody}`);
+			this._logger.debug(`[McpGateway][route ${this.routeId}] POST response: 200 (${responseBody.length} characters)`);
 			res.writeHead(200, headers);
 			res.end(responseBody);
 		} catch (error) {

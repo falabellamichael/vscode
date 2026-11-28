@@ -10,6 +10,9 @@
 	align-items: center;
 	justify-content: center;
 	background: var(--vscode-editor-background);
+	color: var(--vscode-editor-foreground, var(--vscode-foreground));
+	--sessions-empty-state-foreground: var(--vscode-editor-foreground, var(--vscode-foreground));
+	--sessions-empty-state-description-foreground: color-mix(in srgb, var(--vscode-editor-foreground, var(--vscode-foreground)) 72%, transparent);
 	user-select: none;
 }
 

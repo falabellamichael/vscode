@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'child_process';
-import { DeferredPromise } from '../../../../base/common/async.js';
-import { Disposable, DisposableStore, type IDisposable } from '../../../../base/common/lifecycle.js';
+import { DeferredPromise, raceTimeout } from '../../../../base/common/async.js';
+import { Disposable, DisposableStore, MutableDisposable, type IDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { CancellationError, getErrorMessage, isCancellationError } from '../../../../base/common/errors.js';
 import { observableValue } from '../../../../base/common/observable.js';
@@ -33,6 +33,12 @@ import { type AcpMcpServer, type IDevinMcpConfiguration, validateAcpMcpCapabilit
 export const DEVIN_SUBSCRIPTION_PROVIDER = DevinSubscriptionProviderId;
 export const DEVIN_SUBSCRIPTION_RESOURCE = DevinSubscriptionResource;
 const DEVIN_BYPASS_MODE = 'bypass';
+const acpClientInfo = { name: 'agent-workspace', version: '0.1.0' };
+
+function readPromptCapabilities(initialized: Record<string, unknown>): IAcpPromptCapabilities {
+	const capabilities = isObject(initialized.agentCapabilities) ? initialized.agentCapabilities.promptCapabilities : undefined;
+	return isObject(capabilities) ? { image: capabilities.image === true, embeddedContext: capabilities.embeddedContext === true } : {};
+}
 
 interface IDevinAcpToolMetadata {
 	readonly 'cognition.ai/toolName'?: unknown;
@@ -75,7 +81,7 @@ interface ISendOperation {
 type McpRefreshTrigger = 'configuration' | 'owner' | 'clientUpdated' | 'clientRemoved';
 
 interface IDevinConnectionDiagnostics {
-	readonly mcpServerCount: number;
+	mcpServerCount: number;
 	stage: 'launch' | 'initialize' | 'session/new' | 'session/load' | 'model' | 'ready';
 	acpPid?: number;
 	acpExitCode?: number;
@@ -139,7 +145,7 @@ function readPersistedChat(data: string | undefined): IPersistedChat | undefined
 
 export interface IDevinClientAdapter {
 	listModels(env: NodeJS.ProcessEnv): Promise<unknown>;
-	createClient(cwd: string, args: readonly string[], env: NodeJS.ProcessEnv): AcpClient;
+	createClient(cwd: string | undefined, args: readonly string[], env: NodeJS.ProcessEnv): AcpClient;
 }
 
 class DevinActiveClient implements IActiveClient {
@@ -171,7 +177,7 @@ export function devinSubscriptionEnvironment(token: string, inherited: NodeJS.Pr
 	return env;
 }
 
-export function parseDevinModels(value: unknown): readonly IAgentModelInfo[] {
+export function parseDevinModels(value: unknown, acceptsImages: (modelId: string) => boolean = () => false): readonly IAgentModelInfo[] {
 	if (!isObject(value) || !Array.isArray(value.families)) { throw new Error('Invalid Devin model catalog'); }
 	const result = new Map<string, IAgentModelInfo>();
 	for (const family of value.families) {
@@ -182,7 +188,7 @@ export function parseDevinModels(value: unknown): readonly IAgentModelInfo[] {
 				provider: DEVIN_SUBSCRIPTION_PROVIDER, id: model.model_uid, name: model.label,
 				maxContextWindow: typeof model.max_context_tokens === 'number' && model.max_context_tokens > 0 ? model.max_context_tokens : undefined,
 				maxOutputTokens: typeof model.max_output_tokens === 'number' && model.max_output_tokens > 0 ? model.max_output_tokens : undefined,
-				supportsVision: false, // The catalog does not establish per-model image support.
+				supportsVision: acceptsImages(model.model_uid),
 			});
 		}
 	}
@@ -207,6 +213,10 @@ export class DevinSubscriptionAgent extends Disposable implements IAgent {
 	private token: string | undefined;
 	private authRevision = 0;
 	private catalogIds: ReadonlySet<string> = new Set();
+	private readonly probeClient = this._register(new MutableDisposable<AcpClient>());
+	private imageProbe?: Promise<void>;
+	private defaultImageSupport?: boolean;
+	private readonly modelImageSupport = new Map<string, boolean>();
 	private readonly clients = new Map<string, Map<string, DevinActiveClient>>();
 
 	constructor(private readonly executable: string, private readonly adapter?: IDevinClientAdapter, private readonly mcpConfiguration?: IDevinMcpConfiguration, private readonly logService?: ILogService, private readonly configuration?: Pick<IAgentConfigurationService, 'getRootValue' | 'getChatEffectiveValue' | 'onDidChatConfigChange' | 'onDidRootConfigChange'>) {
@@ -243,6 +253,10 @@ export class DevinSubscriptionAgent extends Disposable implements IAgent {
 		if (resource !== DEVIN_SUBSCRIPTION_RESOURCE) { return false; }
 		if (this.token !== (token || undefined)) {
 			this.authRevision++;
+			this.probeClient.clear();
+			this.imageProbe = undefined;
+			this.defaultImageSupport = undefined;
+			this.modelImageSupport.clear();
 			for (const chat of this.records.values()) { this.cancelSendAndRelease(chat, 'accountChanged'); }
 			this.token = token || undefined;
 			this.models.set([], undefined);
@@ -265,9 +279,51 @@ export class DevinSubscriptionAgent extends Disposable implements IAgent {
 				try { resolve(JSON.parse(output)); } catch { failed(); }
 			});
 		});
-		const models = parseDevinModels(value);
+		if (this._store.isDisposed || revision !== this.authRevision) { return; }
+		if (this.defaultImageSupport === undefined) {
+			const probe = this.imageProbe ??= this.probeImageSupport(environment, revision);
+			await probe;
+			if (this.imageProbe === probe) { this.imageProbe = undefined; }
+		}
+		const models = parseDevinModels(value, id => this.acceptsImages(id));
 		if (!models.length) { throw new Error('Devin returned an empty model catalog.'); }
-		if (revision === this.authRevision) { this.catalogIds = new Set(models.map(model => model.id)); this.models.set(models, undefined); }
+		if (!this._store.isDisposed && revision === this.authRevision) { this.catalogIds = new Set(models.map(model => model.id)); this.models.set(models, undefined); }
+	}
+
+	private acceptsImages(modelId: string): boolean {
+		return this.modelImageSupport.get(modelId) ?? this.defaultImageSupport === true;
+	}
+
+	private setImageSupport(modelId: string | undefined, supported: boolean): void {
+		if (modelId) { this.modelImageSupport.set(modelId, supported); }
+		else { this.defaultImageSupport = supported; }
+		const models = this.models.get();
+		if (models.some(model => model.supportsVision !== this.acceptsImages(model.id))) {
+			this.models.set(models.map(model => ({ ...model, supportsVision: this.acceptsImages(model.id) })), undefined);
+		}
+	}
+
+	private createAcpClient(cwd: string | undefined, args: readonly string[], env: NodeJS.ProcessEnv): { client: AcpClient; child?: ChildProcessWithoutNullStreams } {
+		if (this.adapter) { return { client: this.adapter.createClient(cwd, args, env) }; }
+		const child = spawn(this.executable, args, { cwd, env, windowsHide: true, stdio: 'pipe' });
+		return { child, client: new AcpClient(new AcpStdioTransport(child)) };
+	}
+
+	/** The CLI model catalog omits input modalities. ACP initialize advertises accepted prompt blocks without opening a session. */
+	private async probeImageSupport(environment: NodeJS.ProcessEnv, revision: number): Promise<void> {
+		let client: AcpClient | undefined;
+		try {
+			client = this.createAcpClient(undefined, ['acp'], environment).client;
+			this.probeClient.value = client;
+			const initialized = await raceTimeout(initializeAcp(client, acpClientInfo), 3000);
+			if (initialized && revision === this.authRevision && !this._store.isDisposed && this.defaultImageSupport === undefined) {
+				this.setImageSupport(undefined, readPromptCapabilities(initialized).image === true);
+			}
+		} catch {
+			// Unavailable capability discovery must leave text models usable. A real connection or the next refresh can retry.
+		} finally {
+			if (this.probeClient.value === client) { this.probeClient.clear(); }
+		}
 	}
 
 	readonly chats: IAgentChats = {
@@ -297,19 +353,25 @@ export class DevinSubscriptionAgent extends Disposable implements IAgent {
 					if (record.aborting) { throw new CancellationError(); }
 					// A rejected directory change must not replace the owner used to resolve MCP tools.
 					if (operation) { this.setRecordContext(record, resolveAgentChatContext(operation, chat)); }
-					send.stage = 'sessionSetup';
 					if (!record.client && !record.initializing) { record.connectionDiagnostics = undefined; }
-					await this.ensureSession(record);
-					if (record.aborting) { throw new CancellationError(); }
-					if (record.modelNeedsReconciliation) { throw new Error(localize('devin.modelUnconfirmed', "Devin could not confirm the model after a failed change. Select a model again before sending another message.")); }
-					send.stage = 'approvalMode';
-					await this.syncApprovalMode(record);
-					if (record.aborting) { throw new CancellationError(); }
+					let revision: number;
+					do {
+						revision = record.clientRevision;
+						send.stage = 'sessionSetup';
+						await this.ensureSession(record);
+						if (record.aborting) { throw new CancellationError(); }
+						if (record.modelNeedsReconciliation) { throw new Error(localize('devin.modelUnconfirmed', "Devin could not confirm the model after a failed change. Select a model again before sending another message.")); }
+						send.stage = 'approvalMode';
+						await this.syncApprovalMode(record);
+						if (record.aborting) { throw new CancellationError(); }
+					} while (revision !== record.clientRevision);
 				} finally { record.preparing = false; }
 				send.stage = 'preparePrompt';
 				const instructions = operation && !URI.isUri(operation) ? operation.hostInstructions : undefined;
 				const text = instructions?.length ? `${instructions.join('\n\n')}\n\n${prompt}` : prompt;
-				const content = resolveAcpPrompt(text, attachments, record.promptCapabilities ?? {});
+				const capabilities = record.promptCapabilities ?? {};
+				const modelDeclinesImages = record.model && this.modelImageSupport.get(record.model.id) === false;
+				const content = resolveAcpPrompt(text, attachments, modelDeclinesImages ? { ...capabilities, image: false } : capabilities);
 				const turn: Turn = { id: turnId, startedAt: new Date().toISOString(), message: { text: prompt, attachments: attachments ? [...attachments] : undefined, origin: { kind: MessageKind.User } }, responseParts: [], usage: undefined, state: TurnState.Complete };
 				record.activeTurn = turn;
 				record.history.push(turn);
@@ -494,11 +556,14 @@ export class DevinSubscriptionAgent extends Disposable implements IAgent {
 	}
 
 	private async refreshMcpConfiguration(record: IChat, trigger: McpRefreshTrigger): Promise<void> {
+		// The preparing send consumes client updates itself before its single session/prompt.
+		if (trigger === 'clientUpdated' && record.preparing) { return; }
 		const revision = record.clientRevision;
 		const owner = record.context?.owner.get();
 		try {
 			const servers = await this.readMcpConfiguration(record);
 			if (this._store.isDisposed || record.store.isDisposed || this.records.get(record.chat.toString()) !== record) { return; }
+			if (trigger === 'clientUpdated' && (record.preparing || revision !== record.clientRevision)) { return; }
 			if (!equals(record.mcpServers ?? [], servers)) {
 				if (record.client || record.initializing && record.mcpServers !== undefined) {
 					this.cancelSendAndRelease(record, 'mcpChanged', { trigger, before: record.mcpServers?.length ?? 0, after: servers.length });
@@ -532,15 +597,8 @@ export class DevinSubscriptionAgent extends Disposable implements IAgent {
 		const environment = devinSubscriptionEnvironment(token, process.env, process.pid);
 		const diagnostics: IDevinConnectionDiagnostics = { mcpServerCount: mcpServers.length, stage: 'launch' };
 		record.connectionDiagnostics = diagnostics;
-		let child: ChildProcessWithoutNullStreams | undefined;
-		let client: AcpClient;
-		if (this.adapter) {
-			client = this.adapter.createClient(record.cwd.fsPath, args, environment);
-		} else {
-			child = spawn(this.executable, args, { cwd: record.cwd.fsPath, env: environment, windowsHide: true, stdio: 'pipe' });
-			diagnostics.acpPid = child.pid;
-			client = new AcpClient(new AcpStdioTransport(child));
-		}
+		const { client, child } = this.createAcpClient(record.cwd.fsPath, args, environment);
+		diagnostics.acpPid = child?.pid;
 		record.client = client;
 		record.store.add(client);
 		record.store.add(client.onClose(() => {
@@ -557,14 +615,18 @@ export class DevinSubscriptionAgent extends Disposable implements IAgent {
 		const previousHistory = [...record.history];
 		try {
 			diagnostics.stage = 'initialize';
-			const initialized = await initializeAcp(client, { name: 'agent-workspace', version: '0.1.0' });
-			validateAcpMcpCapabilities(mcpServers, isObject(initialized.agentCapabilities) ? initialized.agentCapabilities.mcpCapabilities : undefined);
+			const initialized = await initializeAcp(client, acpClientInfo);
 			if (this.mcpConfiguration) {
 				const currentServers = await this.readMcpConfiguration(record);
-				if (!isEqual(mcpOwner, record.context?.owner.get()) || !equals(mcpServers, currentServers) || record.client !== client || record.aborting || record.send?.cancelled) { throw new CancellationError(); }
+				if (!isEqual(mcpOwner, record.context?.owner.get()) || record.client !== client || record.aborting || record.send?.cancelled) { throw new CancellationError(); }
+				mcpServers = currentServers;
+				record.mcpServers = currentServers;
+				diagnostics.mcpServerCount = currentServers.length;
 			}
-			const capabilities = isObject(initialized.agentCapabilities) ? initialized.agentCapabilities.promptCapabilities : undefined;
-			record.promptCapabilities = isObject(capabilities) ? { image: capabilities.image === true, embeddedContext: capabilities.embeddedContext === true } : {};
+			validateAcpMcpCapabilities(mcpServers, isObject(initialized.agentCapabilities) ? initialized.agentCapabilities.mcpCapabilities : undefined);
+			if (record.client !== client || this.token !== token) { throw new CancellationError(); }
+			record.promptCapabilities = readPromptCapabilities(initialized);
+			this.setImageSupport(record.model?.id, record.promptCapabilities.image === true);
 			const loading = !!record.nativeId;
 			if (loading && (!isObject(initialized.agentCapabilities) || initialized.agentCapabilities.loadSession !== true)) { throw new Error('Devin does not support restoring this session.'); }
 			record.replaying = loading;
@@ -862,7 +924,8 @@ export class DevinSubscriptionAgent extends Disposable implements IAgent {
 		const record = this.records.get(chat.toString());
 		if (record) { this.setRecordContext(record, resolveAgentChatContext(context, chat)); record.clientRevision++; void this.refreshMcpConfiguration(record, 'clientRemoved'); }
 	}
-	onClientToolCallComplete(): void { throw new Error('Devin does not advertise client-side tools.'); }
+	// The host also broadcasts completions for tools Devin already finished over ACP.
+	onClientToolCallComplete(): void { }
 	respondToUserInputRequest(): void { }
 	async resolveChatConfig(params: Parameters<IAgent['resolveChatConfig']>[0]) {
 		const bypassAllowed = this.bypassAllowed();

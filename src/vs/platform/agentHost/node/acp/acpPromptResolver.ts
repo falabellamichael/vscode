@@ -47,7 +47,7 @@ export function resolveAcpPrompt(prompt: string, attachments: readonly MessageAt
 					blocks.push({ type: 'text', text: `${attachment.label}${selection} (read-only attached content):\n${Buffer.from(attachment.data, 'base64').toString('utf8')}` });
 				} else if (mimeType.startsWith('image/') && capabilities.image) {
 					blocks.push({ type: 'image', mimeType: attachment.contentType, data: attachment.data });
-				} else if (capabilities.embeddedContext) {
+				} else if (capabilities.embeddedContext && !mimeType.startsWith('image/')) {
 					blocks.push({ type: 'resource', resource: { uri: URI.from({ scheme: 'attachment', path: `/${encodeURIComponent(attachment.label)}` }).toString(), mimeType: attachment.contentType, blob: attachment.data } });
 				} else {
 					throw new Error(localize('devin.unsupportedAttachment', "Devin did not advertise support for the attachment \"{0}\" ({1}). Remove it or attach text instead.", attachment.label, attachment.contentType));

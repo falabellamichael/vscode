@@ -42,6 +42,7 @@ import { ITextModelService } from '../../../../../editor/common/services/resolve
 import { localize } from '../../../../../nls.js';
 import { getFlatContextMenuActions } from '../../../../../platform/actions/browser/menuEntryActionViewItem.js';
 import { IMenuService, MenuId } from '../../../../../platform/actions/common/actions.js';
+import { parseAgentHostHarness } from '../../../../../platform/agentHost/common/agentHostSessionType.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IContextKey, IContextKeyService, IScopedContextKeyService, RawContextKey } from '../../../../../platform/contextkey/common/contextkey.js';
@@ -56,6 +57,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../../platform
 import { ILabelService } from '../../../../../platform/label/common/label.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IMarkdownRendererService } from '../../../../../platform/markdown/browser/markdownRenderer.js';
+import { COHERE_CHAT_PROVIDER_ID, REACH_CHAT_PROVIDER_ID } from '../../../../../platform/native/common/native.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IOpenerService, OpenInternalOptions } from '../../../../../platform/opener/common/opener.js';
 import { FolderThemeIcon, IThemeService } from '../../../../../platform/theme/common/themeService.js';
@@ -261,14 +263,28 @@ function setAttachmentLabel(label: IResourceLabel, attachment: IChatRequestVaria
 	}
 }
 
-function modelSupportsVision(currentLanguageModel: ILanguageModelChatMetadataAndIdentifier | undefined) {
-	return isAutoLanguageModel(currentLanguageModel) || (currentLanguageModel?.metadata.capabilities?.vision ?? false);
+export function modelSupportsVision(model: ILanguageModelChatMetadataAndIdentifier | undefined): boolean | undefined {
+	if (model && isAutoLanguageModel(model)) {
+		const provider = parseAgentHostHarness(model.metadata.vendor);
+		// These routers publish whether the account currently offers a model that accepts images.
+		if (provider !== COHERE_CHAT_PROVIDER_ID && provider !== REACH_CHAT_PROVIDER_ID) {
+			return true;
+		}
+	}
+	return model?.metadata.capabilities?.vision;
 }
 
-export function getEffectiveImageOmittedState(omittedState: OmittedState | undefined, currentLanguageModel: ILanguageModelChatMetadataAndIdentifier | undefined, isCurrentInput: boolean | undefined): OmittedState | undefined {
-	return isAutoLanguageModel(currentLanguageModel) && isCurrentInput && omittedState === OmittedState.Full
-		? OmittedState.NotOmitted
-		: omittedState;
+export function getEffectiveImageOmittedState(omittedState: OmittedState | undefined, model: ILanguageModelChatMetadataAndIdentifier | undefined, isCurrentInput: boolean | undefined, hasPastedImage = false): OmittedState | undefined {
+	if (isCurrentInput && omittedState !== OmittedState.ImageLimitExceeded) {
+		const vision = modelSupportsVision(model);
+		if (vision === false) {
+			return OmittedState.Full;
+		}
+		if (vision && omittedState === OmittedState.Full && (hasPastedImage || isAutoLanguageModel(model))) {
+			return OmittedState.NotOmitted;
+		}
+	}
+	return omittedState;
 }
 
 
@@ -543,10 +559,10 @@ export class ImageAttachmentWidget extends AbstractChatAttachmentWidget {
 		this.element.classList.add('image-attachment');
 
 		const modelName = currentLanguageModel?.metadata.name;
-		const omittedState = getEffectiveImageOmittedState(attachment.omittedState, currentLanguageModel, options.isCurrentInput);
 		const ref = attachment.references?.[0]?.reference;
 		resource = ref && URI.isUri(ref) ? ref : undefined;
 		const imageData = coerceImageBuffer(attachment.value);
+		const omittedState = getEffectiveImageOmittedState(attachment.omittedState, currentLanguageModel, options.isCurrentInput, attachment.kind === 'image' && !!attachment.isPasted && !!imageData?.byteLength);
 		// A click opens the Images Preview, where the image can be marked up, or else its file, or else its markup.
 		const canPreview = (!!resource || !!imageData) && configurationService.getValue<boolean>(ChatConfiguration.ImageCarouselEnabled);
 		const clickMarksUp = !canPreview && !resource && !!options.markUp;

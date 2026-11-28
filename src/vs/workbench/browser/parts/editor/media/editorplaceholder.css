@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 .monaco-editor-pane-placeholder {
+	background-color: var(--vscode-panel-background, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
 	padding: 0 16px 0 16px;
 	box-sizing: border-box;
 	display: flex;

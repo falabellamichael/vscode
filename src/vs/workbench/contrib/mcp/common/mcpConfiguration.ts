@@ -330,6 +330,10 @@ export const mcpRemoteServerSchema: IJSONSchema = {
 					minLength: 1,
 					markdownDescription: localize('app.mcp.json.oauth.clientId', "The OAuth client ID to use when authenticating with the server. When `enterpriseManaged` is `true`, this is the **resource** authorization server's client ID (the client trusted by the protected resource), not the IdP's. To set the matching client secret, use the *Set Client Secret* code lens above this field — secrets are stored in the OS secret store, not in this file.")
 				},
+				useHttpsCallback: {
+					type: 'boolean',
+					markdownDescription: localize('app.mcp.json.oauth.useHttpsCallback', "Use the Signal-C desktop build's HTTPS OAuth callback. Register that exact callback with the provider and set `clientId` to the corresponding app's public client ID.")
+				},
 				enterpriseManaged: {
 					type: 'boolean',
 					default: false,

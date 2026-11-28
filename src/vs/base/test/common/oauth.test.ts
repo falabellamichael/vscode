@@ -497,6 +497,72 @@ suite('OAuth', () => {
 			assert.deepStrictEqual(result, mockResponse);
 		});
 
+		const desktopServerMetadata: IAuthorizationServerMetadata = {
+			issuer: 'https://auth.example.com',
+			registration_endpoint: 'https://auth.example.com/register',
+			token_endpoint: 'https://auth.example.com/token',
+			response_types_supported: ['code'],
+			token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
+		};
+		const publicClientRejected = { error: 'invalid_client_metadata', error_description: 'Unsupported token_endpoint_auth_method for this client' };
+
+		for (const scheme of ['signal-c', 'signal-c-preview-1234567890abcdef']) {
+			test(`registers the ${scheme} callback addresses and accepts an authorized public client`, async () => {
+				fetchStub.resolves(Response.json({ client_id: 'fixture-public-client' }, { status: 201 }));
+				const registration = await fetchDynamicRegistration(desktopServerMetadata, 'Signal-C', ['read'], scheme);
+				assert.strictEqual(registration.client_id, 'fixture-public-client');
+				assert.strictEqual(fetchStub.callCount, 1);
+				const body = JSON.parse(fetchStub.firstCall.args[1].body);
+				assert.strictEqual(body.token_endpoint_auth_method, 'none');
+				assert.deepStrictEqual(body.redirect_uris, ['http://127.0.0.1/', `http://127.0.0.1:${DEFAULT_AUTH_FLOW_PORT}/`]);
+				assert.strictEqual(body.client_uri, 'https://github.com/falabellamichael/vscode');
+			});
+		}
+
+		for (const { methods, returnedMethod, expectedMethod } of [
+			{ methods: ['client_secret_basic'], returnedMethod: undefined, expectedMethod: 'client_secret_basic' },
+			{ methods: ['client_secret_basic', 'client_secret_post'], returnedMethod: 'client_secret_basic', expectedMethod: 'client_secret_post' },
+		]) {
+			test(`retries with ${expectedMethod} only after the public registration method is rejected`, async () => {
+				fetchStub.onFirstCall().resolves(Response.json(publicClientRejected, { status: 400 }));
+				fetchStub.onSecondCall().resolves(Response.json({ client_id: 'fixture-confidential-client', client_secret: 'fixture-secret', token_endpoint_auth_method: returnedMethod }, { status: 201 }));
+				const registration = await fetchDynamicRegistration({ ...desktopServerMetadata, token_endpoint_auth_methods_supported: methods }, 'Signal-C', ['read'], 'signal-c');
+				assert.strictEqual(registration.token_endpoint_auth_method, returnedMethod ?? expectedMethod);
+				assert.strictEqual(fetchStub.callCount, 2);
+				const firstRequest = JSON.parse(fetchStub.firstCall.args[1].body);
+				const secondRequest = JSON.parse(fetchStub.secondCall.args[1].body);
+				assert.strictEqual(firstRequest.token_endpoint_auth_method, 'none');
+				assert.deepStrictEqual(secondRequest, { ...firstRequest, token_endpoint_auth_method: expectedMethod });
+				assert.strictEqual(fetchStub.secondCall.args[1].redirect, 'error');
+			});
+		}
+
+		test('does not retry a redirect URI rejection or a rate limit as a confidential client', async () => {
+			for (const { status, error } of [{ status: 400, error: 'invalid_redirect_uri' }, { status: 429, error: 'unsupported_token_endpoint_auth_method' }]) {
+				fetchStub.resetHistory();
+				fetchStub.resolves(Response.json({ error }, { status }));
+				await assert.rejects(fetchDynamicRegistration(desktopServerMetadata, 'Signal-C', undefined, 'signal-c'), new RegExp(error));
+				assert.strictEqual(fetchStub.callCount, 1);
+			}
+		});
+
+		test('requires HTTPS at both endpoints before requesting a client secret', async () => {
+			for (const metadata of [{ ...desktopServerMetadata, registration_endpoint: 'http://auth.example.com/register' }, { ...desktopServerMetadata, token_endpoint: 'http://auth.example.com/token' }]) {
+				fetchStub.resetHistory();
+				fetchStub.callsFake(async () => Response.json(publicClientRejected, { status: 400 }));
+				await assert.rejects(fetchDynamicRegistration(metadata, 'Signal-C', undefined, 'signal-c'), /requires HTTPS registration and token endpoints/);
+				assert.strictEqual(fetchStub.callCount, 1);
+			}
+		});
+
+		test('rejects a registration that assigns a method this client cannot use', async () => {
+			fetchStub.resolves(Response.json({ client_id: 'fixture-client', token_endpoint_auth_method: 'private_key_jwt' }, { status: 201 }));
+			await assert.rejects(fetchDynamicRegistration(desktopServerMetadata, 'Signal-C'), /unsupported token authentication method/);
+
+			fetchStub.resolves(Response.json({ client_id: 'fixture-client', token_endpoint_auth_method: 'client_secret_post' }, { status: 201 }));
+			await assert.rejects(fetchDynamicRegistration(desktopServerMetadata, 'Signal-C'), /requires a client secret/);
+		});
+
 		test('fetchDynamicRegistration should throw error on non-OK response', async () => {
 			fetchStub.resolves({
 				ok: false,
@@ -516,10 +582,10 @@ suite('OAuth', () => {
 			);
 		});
 
-		test('fetchDynamicRegistration should throw error on invalid response format', async () => {
+		test('fetchDynamicRegistration rejects invalid client authentication metadata without exposing the registration', async () => {
 			fetchStub.resolves({
 				ok: true,
-				json: async () => ({ invalid: 'response' }) // Missing required fields
+				json: async () => ({ client_id: 'fixture-client', client_secret: 'fixture-secret', token_endpoint_auth_method: ['client_secret_basic'] }),
 			} as Response);
 
 			const serverMetadata: IAuthorizationServerMetadata = {
@@ -530,7 +596,7 @@ suite('OAuth', () => {
 
 			await assert.rejects(
 				async () => await fetchDynamicRegistration(serverMetadata, 'Test Client'),
-				/Invalid authorization dynamic client registration response/
+				{ message: 'Invalid authorization dynamic client registration response' },
 			);
 		});
 

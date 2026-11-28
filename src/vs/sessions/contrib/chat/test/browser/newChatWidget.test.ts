@@ -4247,6 +4247,27 @@ suite('NewChatWidget', () => {
 		]);
 	});
 
+	test('only an explicit local REACH selection uses the desktop subscription', async () => {
+		const commands: string[] = [];
+		let connected = false;
+		const harness: ThisParameterType<typeof prepareSessionTypeSelection> = {
+			_workspacePicker: { selectedFolderUri: undefined, selectedResolved: undefined, setSelectedWorkspace: () => assert.fail() },
+			commandService: { executeCommand: async <T>(id: string) => { commands.push(id); return connected as T; } },
+			logService: { error: () => assert.fail() },
+			_isPreferredServable: () => true,
+		};
+		const pick = { providerId: LOCAL_AGENT_HOST_PROVIDER_ID, sessionTypeId: 'reach' };
+		const cancelled = await prepareSessionTypeSelection.call(harness, pick);
+		connected = true;
+		const accepted = await prepareSessionTypeSelection.call(harness, pick);
+		const other = await prepareSessionTypeSelection.call(harness, { ...pick, sessionTypeId: 'claude' });
+		const remote = await prepareSessionTypeSelection.call(harness, { ...pick, providerId: 'remote-host' });
+		assert.deepStrictEqual({ cancelled, accepted, other, remote, commands }, {
+			cancelled: false, accepted: true, other: true, remote: true,
+			commands: ['workbench.action.chat.connectReach', 'workbench.action.chat.connectReach'],
+		});
+	});
+
 	test('clones a cloud repository only when switching to a local harness', async () => {
 		const repository = URI.parse('github-remote-file://github/microsoft/vscode/HEAD');
 		const localRepository = URI.file('/repos/vscode');

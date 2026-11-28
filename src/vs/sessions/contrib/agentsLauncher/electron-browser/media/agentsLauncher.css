@@ -8,7 +8,7 @@
 	height: 100%;
 	box-sizing: border-box;
 	overflow: hidden;
-	background-color: var(--vscode-editor-background);
+	background-color: var(--vscode-agentsPanel-background, var(--vscode-sideBar-background, var(--vscode-editor-background)));
 	color: var(--vscode-foreground);
 	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border);
 	border-radius: var(--vscode-cornerRadius-large);

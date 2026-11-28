@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="referrer" content="no-referrer">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-pZBcuIV8seu9qzQSOM+SrmutZgsk7oYLSb9uGpOReYk='; base-uri 'none'; form-action 'none'">
+	<title>Return to Signal-C</title>
+</head>
+<body>
+	<main>
+		<h1>Return to Signal-C</h1>
+		<p id="status">The sign-in response could not be opened. Return to Signal-C to try again.</p>
+		<a id="return" hidden>Open Signal-C</a>
+	</main>
+	<script>
+		'use strict';
+		const params = new URLSearchParams(window.location.search);
+		window.history.replaceState(null, '', window.location.pathname);
+
+		const states = params.getAll('state');
+		const codes = params.getAll('code');
+		const errors = params.getAll('error');
+		const state = states.length === 1 && /^([0-9a-f]{32})\.([1-9]\d{0,9})$/.exec(states[0]);
+		if (state && !params.has('access_token') && !params.has('id_token') && !params.has('refresh_token')) {
+			const callback = new URL('signal-c://dynamicauthprovider/https/authorize');
+			callback.searchParams.set('nonce', state[1]);
+			callback.searchParams.set('windowId', state[2]);
+			if (codes.length === 1 && codes[0] && !errors.length) {
+				const bytes = new TextEncoder().encode(codes[0]);
+				if (bytes.length <= 8192) {
+					const code = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+					callback.searchParams.set('code64', code);
+				}
+			} else if (!codes.length && errors.length === 1 && /^[a-z][a-z0-9_]{0,63}$/.test(errors[0])) {
+				callback.searchParams.set('error', errors[0]);
+			}
+			if (callback.searchParams.has('code64') || callback.searchParams.has('error')) {
+				document.getElementById('status').textContent = 'Open Signal-C to finish this sign-in.';
+				const link = document.getElementById('return');
+				link.href = callback.href;
+				link.hidden = false;
+			}
+		}
+	</script>
+</body>
+</html>

@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { IURLService, IURLHandler, IOpenURLOptions } from '../../../../platform/url/common/url.js';
+import { IURLService, IURLHandler, IOpenURLOptions, protocolUrlForLog } from '../../../../platform/url/common/url.js';
 import { URI, UriComponents } from '../../../../base/common/uri.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { URLHandlerChannel } from '../../../../platform/url/common/urlIpc.js';
@@ -69,11 +69,11 @@ export class RelayURLService extends NativeURLService implements IURLHandler, IO
 		const result = await super.open(uri, options);
 
 		if (result) {
-			this.logService.trace('URLService#handleURL(): handled', uri.toString(true));
+			this.logService.trace('URLService#handleURL(): handled', protocolUrlForLog(uri));
 
 			await this.nativeHostService.focusWindow({ mode: FocusMode.Force /* Application may not be active */, targetWindowId: this.nativeHostService.windowId });
 		} else {
-			this.logService.trace('URLService#handleURL(): not handled', uri.toString(true));
+			this.logService.trace('URLService#handleURL(): not handled', protocolUrlForLog(uri));
 		}
 
 		return result;

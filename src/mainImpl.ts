@@ -239,7 +239,8 @@ async function startup(codeCachePath: string | undefined, nlsConfig: INLSConfigu
 
 	// Bootstrap ESM
 	perf.mark('code/willBootstrapESM');
-	const previewProtocol = process.platform === 'win32' && product.urlProtocol === SIGNAL_C_PROTOCOL && (args['agent-workspace-preview'] || process.env['VSCODE_DEV'])
+	const isPreview = args['agent-workspace-preview'] || (process.env['VSCODE_DEV'] && process.env['VSCODE_SIGNAL_C_PRIMARY'] !== '1');
+	const previewProtocol = process.platform === 'win32' && product.urlProtocol === SIGNAL_C_PROTOCOL && isPreview
 		? getWindowsPreviewProtocol(userDataPath)
 		: undefined;
 	await bootstrapESM(previewProtocol);

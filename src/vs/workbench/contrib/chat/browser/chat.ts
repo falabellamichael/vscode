@@ -316,6 +316,8 @@ export interface IChatWidgetViewOptions {
 	renderInputToolbarBelowInput?: boolean;
 	/** Whether to create the toolbar backed by {@link MenuId.ChatInputSecondary}. */
 	renderSecondaryToolbar?: boolean;
+	/** Enables Output Type in Add Context. A host can supply its own selection state. */
+	outputTypePicker?: IChatInputPartOptions['outputTypePicker'];
 	/** Whether to create the toolbar backed by {@link MenuId.ChatInputStatus}. A host can render its own. */
 	renderStatusToolbar?: boolean;
 	/**

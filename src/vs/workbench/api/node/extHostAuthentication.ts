@@ -14,11 +14,12 @@ import { IExtHostWindow } from '../common/extHostWindow.js';
 import { IExtHostUrlsService } from '../common/extHostUrls.js';
 import { ILoggerService, ILogService } from '../../../platform/log/common/log.js';
 import product from '../../../platform/product/common/product.js';
-import { MainThreadAuthenticationShape } from '../common/extHost.protocol.js';
+import { ISignalCOAuthCallback, MainThreadAuthenticationShape } from '../common/extHost.protocol.js';
 import { Proxied } from '../../services/extensions/common/proxyIdentifier.js';
 import { IAuthorizationServerMetadata, IAuthorizationProtectedResourceMetadata, IAuthorizationTokenResponse, IAuthorizationDeviceResponse, isAuthorizationDeviceResponse, isAuthorizationTokenResponse, IAuthorizationDeviceTokenErrorResponse, AuthorizationErrorType, AuthorizationDeviceCodeErrorType } from '../../../base/common/oauth.js';
 import { Emitter } from '../../../base/common/event.js';
 import { raceCancellationError } from '../../../base/common/async.js';
+import { CancellationTokenSource } from '../../../base/common/cancellation.js';
 import { IExtHostProgress } from '../common/extHostProgress.js';
 import { IProgressStep } from '../../../platform/progress/common/progress.js';
 import { CancellationError, isCancellationError } from '../../../base/common/errors.js';
@@ -41,7 +42,9 @@ export class NodeDynamicAuthProvider extends DynamicAuthProvider {
 		clientSecret: string | undefined,
 		onDidDynamicAuthProviderTokensChange: Emitter<{ authProviderId: string; clientId: string; tokens: any[] }>,
 		initialTokens: any[],
-		providerId?: string
+		providerId?: string,
+		tokenEndpointAuthMethod?: string,
+		signalCOAuthCallback?: ISignalCOAuthCallback,
 	) {
 		super(
 			extHostWindow,
@@ -57,7 +60,9 @@ export class NodeDynamicAuthProvider extends DynamicAuthProvider {
 			clientSecret,
 			onDidDynamicAuthProviderTokensChange,
 			initialTokens,
-			providerId
+			providerId,
+			tokenEndpointAuthMethod,
+			signalCOAuthCallback,
 		);
 
 		// Prepend Node-specific flows to the existing flows
@@ -146,13 +151,16 @@ export class NodeDynamicAuthProvider extends DynamicAuthProvider {
 		authorizationUrl.searchParams.set('state', server.state);
 
 		const promise = server.waitForOAuthResponse();
-		// Set up a Uri Handler but it's just to redirect not to handle the code
-		if (appUri) { void this._proxy.$waitForUriHandler(appUri); }
+		void promise.catch(() => { });
+		// The desktop URI returns focus to the app. The loopback server owns the code.
+		const focusCallback = new CancellationTokenSource(token);
+		if (appUri) {
+			void this._proxy.$waitForUriHandler(appUri, focusCallback.token).catch(() => { });
+		}
 
 		try {
 			// Open the browser for user authorization
 			this._logger.info(`Opening authorization URL for scopes: ${scopeString}`);
-			this._logger.trace(`Authorization URL: ${authorizationUrl.toString()}`);
 			const opened = await this._extHostWindow.openUri(authorizationUrl.toString(), {});
 			if (!opened) {
 				throw new CancellationError();
@@ -182,6 +190,7 @@ export class NodeDynamicAuthProvider extends DynamicAuthProvider {
 		} finally {
 			// Clean up the server
 			setTimeout(() => {
+				focusCallback.dispose(true);
 				void server.stop();
 			}, 5000);
 		}

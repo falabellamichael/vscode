@@ -26,7 +26,11 @@ suite('Chat draft handoff serialization', () => {
 			{ kind: 'image', id: 'image', name: 'Screenshot', value: new Uint8Array([1, 2, 255]), mimeType: 'image/png', isPasted: true },
 			{ kind: 'element', id: 'element', name: 'Element', value: '<button>Run</button>', imageData: new Uint8Array([4, 5, 6]), imageMimeType: 'image/png' },
 		];
-		const original: IChatDraft = { inputText: 'Fix this\nwith "context".', attachments };
+		const original: IChatDraft = {
+			inputText: 'Fix this\nwith "context".',
+			attachments,
+			sendContext: [{ kind: 'promptText', id: 'session-output:website', name: 'Requested output', value: 'Build a website.', modelDescription: 'Requested deliverable', automaticallyAdded: true }],
+		};
 		const serialized = serializeChatDraft(original);
 		const transferred: IAgentsWindowDraft = JSON.parse(JSON.stringify(serialized));
 		const revived = reviveChatDraft(transferred);
@@ -40,6 +44,7 @@ suite('Chat draft handoff serialization', () => {
 			image: image instanceof Uint8Array ? [...image] : undefined,
 			elementImage: element.kind === 'element' && element.imageData instanceof Uint8Array ? [...element.imageData] : undefined,
 			sourceImage: attachments[3].value,
+			sendContext: revived.sendContext?.map(entry => entry.id),
 			payloadFields: Object.keys(transferred).sort(),
 		}, {
 			valid: true,
@@ -49,7 +54,8 @@ suite('Chat draft handoff serialization', () => {
 			image: [1, 2, 255],
 			elementImage: [4, 5, 6],
 			sourceImage: new Uint8Array([1, 2, 255]),
-			payloadFields: ['attachments', 'inputText'],
+			sendContext: ['session-output:website'],
+			payloadFields: ['attachments', 'inputText', 'sendContext'],
 		});
 	});
 
@@ -68,6 +74,7 @@ suite('Chat draft handoff serialization', () => {
 				{ kind: 'directory', id: `sessions-additional-folder:${wsl('')}`, name: 'project', value: wsl('') },
 				local,
 			],
+			sendContext: [toFileVariableEntry(wsl('/hidden.ts'))],
 			references: [
 				{ id: file.id, range, isFile: true, isAttachmentReference: true, data: undefined },
 				{ id: 'vscode.file', range, isFile: true, data: wsl('/d.ts') },
@@ -79,6 +86,7 @@ suite('Chat draft handoff serialization', () => {
 			inputText: remapped.inputText,
 			attachments: remapped.attachments.map(attachment => [attachment.id, IChatRequestVariableEntry.toUri(attachment)?.toString()]),
 			references: remapped.references?.map(reference => [reference.id, URI.isUri(reference.data) ? reference.data.toString() : reference.data]),
+			sendContext: remapped.sendContext?.map(attachment => [attachment.id, IChatRequestVariableEntry.toUri(attachment)?.toString()]),
 			unchangedLocal: remapped.attachments[3] === local && remapped.references?.[2] === draft.references?.[2],
 			unchangedWithoutMatch: remapChatDraftResources(remapped, mapResource) === remapped,
 		}, {
@@ -94,6 +102,7 @@ suite('Chat draft handoff serialization', () => {
 				['vscode.file', 'vscode-agent-host://env/file/-/project/d.ts'],
 				['vscode.file', 'file:///workspace/e.ts'],
 			],
+			sendContext: [['vscode-agent-host://env/file/-/project/hidden.ts', 'vscode-agent-host://env/file/-/project/hidden.ts']],
 			unchangedLocal: true,
 			unchangedWithoutMatch: true,
 		});
@@ -228,5 +237,6 @@ suite('Chat draft handoff serialization', () => {
 		for (const attachments of ['null', '{}', '[{"kind":"file"}]']) {
 			assert.throws(() => reviveChatDraft({ inputText: 'Keep the destination', attachments }), /Invalid chat draft attachments/);
 		}
+		assert.throws(() => reviveChatDraft({ inputText: 'Keep the destination', attachments: '[]', sendContext: '{}' }), /Invalid chat draft send context/);
 	});
 });

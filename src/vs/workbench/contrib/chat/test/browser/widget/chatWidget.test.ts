@@ -92,6 +92,8 @@ import { IChatSessionsService, ResolvedChatSessionsExtensionPoint, SessionType }
 import { IsSessionsWindowContext } from '../../../../../common/contextkeys.js';
 import { createTextModel } from '../../../../../../editor/test/common/testTextModel.js';
 import { MockChatModel } from '../../common/model/mockChatModel.js';
+import { SESSION_OUTPUT_TYPE_META_KEY } from '../../../common/sessionOutputType.js';
+import { toSessionOutputPromptEntry } from '../../../browser/widget/input/sessionOutputTypePicker.js';
 
 suite('ChatWidget', () => {
 
@@ -400,6 +402,20 @@ suite('ChatWidget', () => {
 			scopedTools: retainRequest ? scopedTools : undefined,
 		};
 	}
+
+	test('the first request keeps its tool selection when its untitled session is committed', () => {
+		const { widget, sessionA, sessionB, viewModel, tools } = createRequestToolsWidget();
+		const selection = widget.getModeRequestOptions().userSelectedTools!;
+		assert.deepStrictEqual(selection.get(), { toolA: true });
+		Object.assign(widget, { _committedFrom: sessionA.sessionResource });
+		viewModel.set(sessionB, undefined);
+		tools.set({ toolA: false }, undefined);
+		assert.deepStrictEqual(selection.get(), { toolA: false });
+		Object.assign(widget, { _committedFrom: undefined });
+		viewModel.set(upcastPartial<ChatViewModel>({ sessionResource: URI.parse('test:/other') }), undefined);
+		tools.set({ toolA: true }, undefined);
+		assert.deepStrictEqual(selection.get(), { toolA: false });
+	});
 
 	test('request tools preserve their original input source across GC and release it on widget disposal', async function () {
 		if (typeof globalThis.gc !== 'function') {
@@ -843,6 +859,7 @@ suite('ChatWidget', () => {
 				value: {
 					input: 'original request',
 					attachmentIds: new Set(['original-attachment']),
+					sendContextIds: new Set<string>(),
 				},
 				writable: true,
 			},
@@ -937,7 +954,7 @@ suite('ChatWidget', () => {
 		}]);
 	});
 
-	function createStartEditingWidget(input: object, request: IChatRequestViewModel, configurationService: TestConfigurationService, dynamicVariableModel?: ChatDynamicVariableModel) {
+	function createStartEditingWidget(input: object, request: IChatRequestViewModel, configurationService: TestConfigurationService, dynamicVariableModel?: ChatDynamicVariableModel, modelRequests: IChatRequestModel[] = []) {
 		let editing: IChatRequestViewModel | undefined;
 		const widget = Object.create(ChatWidget.prototype) as ChatWidget;
 		Object.defineProperties(widget, {
@@ -948,7 +965,7 @@ suite('ChatWidget', () => {
 			telemetryService: { value: NullTelemetryService },
 			viewModel: {
 				value: {
-					model: { getRequests: () => [], setCheckpoint: () => { } },
+					model: { getRequests: () => modelRequests, getPendingRequests: () => [], setCheckpoint: () => { } },
 					sessionResource: URI.parse('agent-host-copilot:/session'),
 					get editing() { return editing; },
 					setEditing: (request: IChatRequestViewModel | undefined) => { editing = request; },
@@ -1095,6 +1112,80 @@ suite('ChatWidget', () => {
 		widget.startEditing(request.id);
 
 		assert.deepStrictEqual(input.requestModelByIdentifier.firstCall.args, [modelId, modelConfiguration]);
+	});
+
+	test('editing a request restores its hidden output context without an attachment pill', async () => {
+		const configurationService = new TestConfigurationService();
+		await configurationService.setUserConfiguration('chat.editRequests', 'input');
+		const outputEntry = toSessionOutputPromptEntry('website')!;
+		const addedAttachments: string[] = [];
+		const input = mockObject<ChatInputPart>()({
+			element: mainWindow.document.createElement('div'),
+			inputEditor: upcastPartial<ChatInputPart['inputEditor']>({
+				getValue: () => 'original request', getModel: () => null, focus: () => { },
+			}),
+			attachmentModel: upcastPartial<ChatInputPart['attachmentModel']>({
+				getAttachmentIDs: () => new Set(),
+				addContext: (...entries: { id: string }[]) => { addedAttachments.push(...entries.map(entry => entry.id)); },
+			}),
+			dnd: upcastPartial<ChatInputPart['dnd']>({ setDisabledOverlay: () => { } }),
+			onDidClickOverlay: Event.None,
+		});
+		input.getSendContext.returns([outputEntry]);
+		const request = upcastPartial<IChatRequestViewModel>({
+			id: 'request',
+			message: { text: 'original request', parts: [] },
+			messageText: 'original request',
+			variables: [],
+		});
+		const modelRequest = upcastPartial<IChatRequestModel>({
+			id: 'request',
+			attachedContext: [outputEntry],
+			setShouldBeBlocked: () => { },
+		});
+		const widget = createStartEditingWidget(input, request, configurationService, undefined, [modelRequest]);
+
+		widget.startEditing(request.id);
+
+		assert.deepStrictEqual({
+			seeded: input.setSendContext.firstCall.args[0].map((entry: { id: string }) => entry.id),
+			pills: addedAttachments,
+		}, { seeded: ['session-output:website'], pills: [] });
+	});
+
+	test('editing a reloaded request restores its output selection from request metadata', async () => {
+		const configurationService = new TestConfigurationService();
+		await configurationService.setUserConfiguration('chat.editRequests', 'input');
+		const input = mockObject<ChatInputPart>()({
+			element: mainWindow.document.createElement('div'),
+			inputEditor: upcastPartial<ChatInputPart['inputEditor']>({
+				getValue: () => 'original request', getModel: () => null, focus: () => { },
+			}),
+			attachmentModel: upcastPartial<ChatInputPart['attachmentModel']>({
+				getAttachmentIDs: () => new Set(), addContext: () => { },
+			}),
+			dnd: upcastPartial<ChatInputPart['dnd']>({ setDisabledOverlay: () => { } }),
+			onDidClickOverlay: Event.None,
+		});
+		input.getSendContext.returns([]);
+		const request = upcastPartial<IChatRequestViewModel>({
+			id: 'request',
+			message: { text: 'original request', parts: [] },
+			messageText: 'original request',
+			variables: [],
+		});
+		const modelRequest = upcastPartial<IChatRequestModel>({
+			id: 'request',
+			agentHostMetadata: { [SESSION_OUTPUT_TYPE_META_KEY]: 'slides', 'custom.key': 'kept' },
+			setShouldBeBlocked: () => { },
+		});
+		const widget = createStartEditingWidget(input, request, configurationService, undefined, [modelRequest]);
+
+		widget.startEditing(request.id);
+
+		const seeded = input.setSendContext.firstCall.args[0] as { id: string; value: string }[];
+		assert.deepStrictEqual(seeded.map(entry => entry.id), ['session-output:slides']);
+		assert.ok(seeded[0].value.includes('slide deck'), 'seeded entry carries the slides instruction');
 	});
 
 	test('inline session references preserve their kind, title and metadata when edited and resent', async () => {
@@ -2790,6 +2881,7 @@ suite('ChatWidget - acceptInput submission', () => {
 		});
 		input.getAttachedContext.returns(attachments);
 		input.getAttachedAndImplicitContext.returns(attachments);
+		input.getSendContext.returns([]);
 		const editorService = mockObject<IEditorService>()();
 		editorService.saveAll.resolves({ success: true, editors: [] });
 		editorService.findEditors.returns([]);
@@ -2924,6 +3016,25 @@ suite('ChatWidget - acceptInput submission', () => {
 		} finally {
 			await paste.complete(true);
 		}
+	});
+
+	test('sends the selected output as hidden context and request metadata', async () => {
+		const fixture = createSubmissionWidget();
+		fixture.input.getSendContext.returns([{
+			kind: 'promptText',
+			id: 'session-output:document',
+			name: 'Requested output · Document',
+			value: 'Create a polished document.',
+			modelDescription: 'The output type the user selected',
+			automaticallyAdded: true,
+		}]);
+
+		await fixture.widget.acceptInput();
+		const options = fixture.chatService.sendRequest.firstCall.args[2] as IChatSendRequestOptions;
+		assert.deepStrictEqual({
+			context: options.attachedContext?.map(entry => entry.id),
+			metadata: options.metadata?.[SESSION_OUTPUT_TYPE_META_KEY],
+		}, { context: ['session-output:document'], metadata: 'document' });
 	});
 
 	for (const phase of ['save', 'attachments'] as const) {

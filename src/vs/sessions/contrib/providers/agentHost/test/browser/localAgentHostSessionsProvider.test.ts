@@ -62,6 +62,7 @@ import { TestInstantiationService } from '../../../../../../platform/instantiati
 import { InMemoryStorageService, IStorageService, StorageScope, StorageTarget } from '../../../../../../platform/storage/common/storage.js';
 import { IProgressService } from '../../../../../../platform/progress/common/progress.js';
 import { INotificationService } from '../../../../../../platform/notification/common/notification.js';
+import { REACH_ACCOUNT_ORIGIN, REACH_CHAT_PROVIDER_ID } from '../../../../../../platform/native/common/native.js';
 import { ITelemetryService } from '../../../../../../platform/telemetry/common/telemetry.js';
 import { NullTelemetryService, NullTelemetryServiceShape } from '../../../../../../platform/telemetry/common/telemetryUtils.js';
 import { getTelemetryMigrationSessionId } from '../../../../../../platform/agentHost/common/agentTelemetryCorrelation.js';
@@ -1238,6 +1239,28 @@ suite('LocalAgentHostSessionsProvider', () => {
 		// local and remote hosts and the standalone Copilot CLI provider.
 		assert.strictEqual(provider.sessionTypes[0].id, 'copilotcli');
 		assert.strictEqual(provider.sessionTypes[0].label, 'Copilot');
+	});
+
+	test('offers local REACH in workspace and folderless chats before subscription sign-in', () => {
+		agentHost.setAgents([{
+			provider: REACH_CHAT_PROVIDER_ID, displayName: 'REACH', description: '', models: [],
+			protectedResources: [{ resource: REACH_ACCOUNT_ORIGIN }],
+		}]);
+		const provider = createProvider(disposables, agentHost);
+		const workspace = URI.file('/project');
+		const [quick] = provider.sessionTypes;
+		const [folder] = provider.getSessionTypes(workspace);
+		assert.deepStrictEqual({
+			quick: [provider.supportsQuickChats, quick.id, quick.label, quick.chatSessionType],
+			folder: [folder.id, folder.label, folder.chatSessionType],
+			canSignIn: quick.initializationOnSelection?.canInitializeWithoutGitHub,
+			drafts: [provider.createQuickChat(quick.id), provider.createNewSession(workspace, folder.id)].map(draft => [draft.sessionType, draft.resource.scheme]),
+		}, {
+			quick: [true, 'reach', 'REACH', 'agent-host-reach'],
+			folder: ['reach', 'REACH', 'agent-host-reach'],
+			canSignIn: true,
+			drafts: [['reach', 'agent-host-reach'], ['reach', 'agent-host-reach']],
+		});
 	});
 
 	test('leaves remote connection status absent from local sessions', () => {

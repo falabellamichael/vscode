@@ -242,6 +242,7 @@ import '../workbench/contrib/chat/electron-browser/agentSessions/computerUseHelp
 
 // Chat: attach a screenshot of the window of another app
 import '../workbench/contrib/chat/electron-browser/actions/chatAppWindowScreenshotActions.js';
+import '../workbench/contrib/chat/electron-browser/builtInTools/reachWorkspaceFiles.contribution.js';
 
 //#endregion
 
@@ -278,6 +279,7 @@ import './contrib/agentFeedback/browser/agentFeedback.contribution.js';
 import './contrib/chat/electron-browser/chat.contribution.js';
 
 // Local Agent Host
+import '../workbench/contrib/chat/browser/agentSessions/agentHost/localReachChatConnection.js';
 import './contrib/providers/agentHost/browser/localAgentHost.contribution.js';
 import './contrib/providers/agentHost/browser/codexContinuation.contribution.js';
 import './contrib/providers/agentHost/electron-browser/localAgentHostLifecycle.contribution.js';

@@ -6,15 +6,15 @@
 import type * as vscode from 'vscode';
 import * as nls from '../../../nls.js';
 import { Emitter, Event } from '../../../base/common/event.js';
-import { MainContext, MainThreadAuthenticationShape, ExtHostAuthenticationShape } from './extHost.protocol.js';
+import { MainContext, MainThreadAuthenticationShape, ExtHostAuthenticationShape, ISignalCOAuthCallback } from './extHost.protocol.js';
 import { Proxied } from '../../services/extensions/common/proxyIdentifier.js';
 import { Disposable, ProgressLocation } from './extHostTypes.js';
 import { IExtensionDescription, ExtensionIdentifier } from '../../../platform/extensions/common/extensions.js';
-import { getAuthenticationSessionRequestKey, IAuthenticationGetSessionsOptions, IAuthenticationProviderSessionOptions, INTERNAL_AUTH_PROVIDER_PREFIX, isGoogleWorkspaceOAuth, isSignalCMailOAuth } from '../../services/authentication/common/authentication.js';
+import { getAuthenticationSessionRequestKey, getOAuthTokenFingerprint, IAuthenticationGetSessionsOptions, IAuthenticationProviderSessionOptions, INTERNAL_AUTH_PROVIDER_PREFIX, isGoogleWorkspaceOAuth, isSignalCMailOAuth, MCP_ACCEPT_PARTIAL_OAUTH_SCOPES, MCP_REFRESH_REJECTED_OAUTH_TOKEN, MCP_USE_HTTPS_OAUTH_CALLBACK, signalCMailOAuth } from '../../services/authentication/common/authentication.js';
 import { createDecorator } from '../../../platform/instantiation/common/instantiation.js';
 import { IExtHostRpcService } from './extHostRpcService.js';
 import { URI, UriComponents } from '../../../base/common/uri.js';
-import { AuthorizationErrorType, fetchDynamicRegistration, getClaimsFromJWT, IAuthorizationJWTClaims, IAuthorizationProtectedResourceMetadata, IAuthorizationServerMetadata, IAuthorizationTokenResponse, isAuthorizationErrorResponse, isAuthorizationTokenResponse } from '../../../base/common/oauth.js';
+import { AuthorizationErrorType, fetchDynamicRegistration, getClaimsFromJWT, IAuthorizationJWTClaims, IAuthorizationProtectedResourceMetadata, IAuthorizationServerMetadata, IAuthorizationTokenResponse, isAuthorizationErrorResponse, isAuthorizationTokenResponse, isSignalCOAuthScheme, scopesMatch } from '../../../base/common/oauth.js';
 import { IExtHostWindow } from './extHostWindow.js';
 import { IExtHostInitDataService } from './extHostInitDataService.js';
 import { ILogger, ILoggerService, ILogService } from '../../../platform/log/common/log.js';
@@ -22,13 +22,14 @@ import { autorun, derivedOpts, IObservable, ISettableObservable, observableValue
 import { stringHash } from '../../../base/common/hash.js';
 import { DisposableStore, IDisposable } from '../../../base/common/lifecycle.js';
 import { IExtHostUrlsService } from './extHostUrls.js';
-import { encodeBase64, VSBuffer } from '../../../base/common/buffer.js';
+import { decodeBase64, encodeBase64, VSBuffer } from '../../../base/common/buffer.js';
 import { equals as arraysEqual } from '../../../base/common/arrays.js';
 import { IExtHostProgress } from './extHostProgress.js';
 import { NotificationTelemetryId } from '../../../platform/notification/common/notificationTelemetry.js';
 import { IProgressStep } from '../../../platform/progress/common/progress.js';
 import { CancellationError, isCancellationError } from '../../../base/common/errors.js';
-import { raceCancellationError, SequencerByKey } from '../../../base/common/async.js';
+import { Sequencer, SequencerByKey } from '../../../base/common/async.js';
+import { CancellationTokenSource } from '../../../base/common/cancellation.js';
 import { XaaifyAuthProvider } from './extHostXaaAuthProvider.js';
 
 export interface IExtHostAuthentication extends ExtHostAuthentication { }
@@ -280,15 +281,18 @@ export class ExtHostAuthentication implements ExtHostAuthenticationShape {
 		clientId: string | undefined,
 		clientSecret: string | undefined,
 		initialTokens: IAuthorizationToken[] | undefined,
-		providerId?: string
+		providerId?: string,
+		tokenEndpointAuthMethod?: string,
+		signalCOAuthCallback?: ISignalCOAuthCallback,
 	): Promise<string> {
 		if (!clientId) {
 			const authorizationServer = URI.revive(authorizationServerComponents);
 			if (serverMetadata.registration_endpoint) {
 				try {
-					const registration = await fetchDynamicRegistration(serverMetadata, this._initData.environment.appName, resourceMetadata?.scopes_supported);
+					const registration = await fetchDynamicRegistration(serverMetadata, this._initData.environment.appName, resourceMetadata?.scopes_supported, this._initData.environment.appUriScheme);
 					clientId = registration.client_id;
 					clientSecret = registration.client_secret;
+					tokenEndpointAuthMethod = registration.token_endpoint_auth_method;
 				} catch (err) {
 					this._logService.warn(`Dynamic registration failed for ${authorizationServer.toString()}: ${err.message}. Prompting user for client ID and client secret...`);
 				}
@@ -324,7 +328,9 @@ export class ExtHostAuthentication implements ExtHostAuthenticationShape {
 			clientSecret,
 			this._onDidDynamicAuthProviderTokensChange,
 			initialTokens || [],
-			providerId
+			providerId,
+			tokenEndpointAuthMethod,
+			signalCOAuthCallback,
 		);
 
 		// Use the sequencer to ensure dynamic provider registration is serialized
@@ -340,7 +346,8 @@ export class ExtHostAuthentication implements ExtHostAuthenticationShape {
 						provider.onDidChangeClientId(() => this._proxy.$sendDidChangeDynamicProviderInfo({
 							providerId: provider.id,
 							clientId: provider.clientId,
-							clientSecret: provider.clientSecret
+							clientSecret: provider.clientSecret,
+							tokenEndpointAuthMethod: provider.tokenEndpointAuthMethod,
 						}))
 					),
 					options: { supportsMultipleAccounts: true }
@@ -354,7 +361,8 @@ export class ExtHostAuthentication implements ExtHostAuthenticationShape {
 				authorizationServer: authorizationServerComponents,
 				resourceServer: resourceMetadata ? URI.parse(resourceMetadata.resource) : undefined,
 				clientId: provider.clientId,
-				clientSecret: provider.clientSecret
+				clientSecret: provider.clientSecret,
+				tokenEndpointAuthMethod: provider.tokenEndpointAuthMethod,
 			});
 		});
 
@@ -490,6 +498,7 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 	readonly onDidChangeClientId = this._onDidChangeClientId.event;
 
 	private readonly _tokenStore: TokenStore;
+	private readonly _refreshSequencer = new Sequencer();
 
 	protected readonly _createFlows: Array<{
 		label: string;
@@ -517,6 +526,8 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 		onDidDynamicAuthProviderTokensChange: Emitter<{ authProviderId: string; clientId: string; tokens: IAuthorizationToken[] }>,
 		initialTokens: IAuthorizationToken[],
 		providerId?: string,
+		private _tokenEndpointAuthMethod?: string,
+		private readonly _signalCOAuthCallback?: ISignalCOAuthCallback,
 		private readonly _fetch: typeof fetch = fetch,
 	) {
 		const stringifiedServer = authorizationServer.toString(true);
@@ -552,7 +563,7 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 		this._disposable.add(this._tokenStore.onDidChangeSessions(e => this._onDidChangeSessions.fire(e)));
 		// Will be extended later to support other flows
 		this._createFlows = [];
-		if (_serverMetadata.authorization_endpoint && !this._isSignalCMailOAuth) {
+		if (_serverMetadata.authorization_endpoint && !this._isSignalCMailOAuth && !isSignalCOAuthScheme(_initData.environment.appUriScheme)) {
 			this._createFlows.push({
 				label: nls.localize('url handler', "URL Handler"),
 				handler: (scopes, progress, token) => this._createWithUrlHandler(scopes, progress, token)
@@ -568,6 +579,10 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 		return this._clientSecret;
 	}
 
+	get tokenEndpointAuthMethod(): string | undefined {
+		return this._tokenEndpointAuthMethod;
+	}
+
 	/**
 	 * The RFC 8707 resource indicator to send in requests. Omitted for Microsoft auth.
 	 */
@@ -580,10 +595,16 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 	 * Empty scopes are left empty so servers can still apply their default scopes.
 	 */
 	protected _getRequestScopes(scopes: readonly string[]): string[] {
-		if (scopes.length && this._serverMetadata.scopes_supported?.includes('offline_access') && !scopes.includes('offline_access')) {
-			return [...scopes, 'offline_access'];
+		const requested = [...scopes];
+		if (scopes.length && this._isGoogleLoopbackOAuth && !this._isSignalCMailOAuth && !scopes.includes('openid')) {
+			// Google Workspace access tokens are opaque. The ID token identifies the
+			// account if a later tool needs additional consent for the same account.
+			requested.push('openid');
 		}
-		return [...scopes];
+		if (scopes.length && this._serverMetadata.scopes_supported?.includes('offline_access') && !scopes.includes('offline_access')) {
+			requested.push('offline_access');
+		}
+		return requested;
 	}
 
 	async getSessions(scopes: readonly string[] | undefined, options: IAuthenticationProviderSessionOptions): Promise<vscode.AuthenticationSession[]> {
@@ -591,12 +612,44 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 		if (!scopes) {
 			return this._tokenStore.sessions;
 		}
-		// The oauth spec says tthat order doesn't matter so we sort the scopes for easy comparison
-		// https://datatracker.ietf.org/doc/html/rfc6749#section-3.3
-		// TODO@TylerLeonhardt: Do this for all scope handling in the auth APIs
-		const sortedScopes = [...scopes].sort();
+		// Several MCP requests can ask for a session concurrently. Refresh-token rotation
+		// makes the token from the first exchange unusable by the next request.
+		return this._refreshSequencer.queue(() => this._getSessionsForScopes(scopes, options));
+	}
+
+	private async _getSessionsForScopes(scopes: readonly string[], options: IAuthenticationProviderSessionOptions): Promise<vscode.AuthenticationSession[]> {
 		const scopeStr = scopes.join(' ');
-		let sessions = this._tokenStore.sessions.filter(session => arraysEqual([...session.scopes].sort(), sortedScopes));
+		const acceptPartialScopes = options[MCP_ACCEPT_PARTIAL_OAUTH_SCOPES] === true;
+		const findSessions = () => {
+			const tokensByAccessToken = new Map(this._tokenStore.tokens.map(token => [token.access_token, token]));
+			const complete: vscode.AuthenticationSession[] = [];
+			const partial: vscode.AuthenticationSession[] = [];
+			for (const session of this._tokenStore.sessions) {
+				const request = tokensByAccessToken.get(session.accessToken)?.requested_scope;
+				if (scopesMatch(session.scopes, scopes)) {
+					complete.push(session);
+				} else if (request !== undefined && scopesMatch(request.split(' ').filter(Boolean), scopes)) {
+					if (this._isUsableScopeGrant(scopes, session.scopes, false)) {
+						complete.push(session);
+					} else if (acceptPartialScopes && this._isUsableScopeGrant(scopes, session.scopes, true)) {
+						partial.push(session);
+					}
+				}
+			}
+			const newestFirst = (a: vscode.AuthenticationSession, b: vscode.AuthenticationSession) =>
+				(tokensByAccessToken.get(b.accessToken)?.created_at ?? 0) - (tokensByAccessToken.get(a.accessToken)?.created_at ?? 0);
+			return [...complete.sort(newestFirst), ...partial.sort(newestFirst)];
+		};
+		let sessions = findSessions();
+		const rejectedFingerprint = options[MCP_REFRESH_REJECTED_OAUTH_TOKEN];
+		if (typeof rejectedFingerprint === 'string') {
+			for (const session of sessions) {
+				if (await getOAuthTokenFingerprint(session.accessToken) === rejectedFingerprint) {
+					return this._refreshRejectedSession(session, scopes, acceptPartialScopes);
+				}
+			}
+			return [];
+		}
 		this._logger.info(`Found ${sessions.length} sessions for scopes: ${scopeStr}`);
 		if (sessions.length) {
 			const newTokens: IAuthorizationToken[] = [];
@@ -617,16 +670,7 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 							continue;
 						}
 						try {
-							const newToken = await this.exchangeRefreshTokenForToken(token.refresh_token, session.scopes, options.silent !== true);
-							if (this._isSignalCMailOAuth) {
-								newToken.id_token ??= token.id_token;
-							}
-							// TODO@TylerLeonhardt: When the core scope handling doesn't care about order, this check should be
-							// updated to not care about order
-							if (newToken.scope !== scopeStr) {
-								this._logger.warn(`Token scopes '${newToken.scope}' do not match requested scopes '${scopeStr}'. Overwriting token with what was requested...`);
-								newToken.scope = scopeStr;
-							}
+							const newToken = await this._refreshSessionToken(token, token.refresh_token, session.scopes, options.silent !== true);
 							this._logger.info(`Successfully created a new token for scopes ${session.scopes.join(' ')}.`);
 							newTokens.push(newToken);
 						} catch (err) {
@@ -637,10 +681,10 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 				}
 			}
 			if (newTokens.length || removedTokens.length) {
-				this._tokenStore.update({ added: newTokens, removed: removedTokens });
+				await this._tokenStore.update({ added: newTokens, removed: removedTokens });
 				// Since we updated the tokens, we need to re-filter the sessions
 				// to get the latest state
-				sessions = this._tokenStore.sessions.filter(session => arraysEqual([...session.scopes].sort(), sortedScopes));
+				sessions = findSessions();
 			}
 			this._logger.info(`Found ${sessions.length} sessions for scopes: ${scopeStr}`);
 			return sessions;
@@ -648,7 +692,41 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 		return [];
 	}
 
-	async createSession(scopes: string[], _options: vscode.AuthenticationProviderSessionOptions): Promise<vscode.AuthenticationSession> {
+	private async _refreshSessionToken(token: IAuthorizationToken, refreshToken: string, scopes: readonly string[], allowClientRegistration: boolean): Promise<IAuthorizationToken> {
+		const refreshed = await this.exchangeRefreshTokenForToken(refreshToken, scopes, allowClientRegistration);
+		refreshed.id_token ??= token.id_token;
+		// If scope is omitted, inherit the grant being refreshed, even if it was partial.
+		refreshed.scope = this._getGrantedScopes(scopes, refreshed).join(' ');
+		refreshed.requested_scope = token.requested_scope ?? scopes.join(' ');
+		return refreshed;
+	}
+
+	private async _refreshRejectedSession(session: vscode.AuthenticationSession, scopes: readonly string[], acceptPartialScopes: boolean): Promise<vscode.AuthenticationSession[]> {
+		const token = this._tokenStore.tokens.find(token => token.access_token === session.accessToken);
+		if (!token?.refresh_token) {
+			return [];
+		}
+		try {
+			const refreshed = await this._refreshSessionToken(token, token.refresh_token, session.scopes, false);
+			const replacement = this._tokenStore.getSessionFromToken(refreshed);
+			if (replacement.account.id !== session.account.id || replacement.account.label !== session.account.label
+				|| !replacement.scopes.every(scope => session.scopes.includes(scope))) {
+				this._logger.warn('The OAuth refresh response changed the account or expanded the rejected grant.');
+				return [];
+			}
+			// Another window may have removed or rotated this grant while the exchange was pending.
+			if (!this._tokenStore.tokens.some(current => current.access_token === token.access_token && current.refresh_token === token.refresh_token && current.scope === token.scope)) {
+				return [];
+			}
+			await this._tokenStore.update({ added: [refreshed], removed: [token] });
+			return replacement.accessToken !== session.accessToken && this._isUsableScopeGrant(scopes, replacement.scopes, acceptPartialScopes) ? [replacement] : [];
+		} catch {
+			this._logger.warn('Could not refresh the rejected OAuth grant.');
+			return [];
+		}
+	}
+
+	async createSession(scopes: string[], options: IAuthenticationProviderSessionOptions): Promise<vscode.AuthenticationSession> {
 		if (this._isSignalCMailOAuth && !this._createFlows.length) {
 			throw new Error(nls.localize('directMailOAuth.localRequired', "Direct mail sign-in requires a local Signal-C desktop extension host."));
 		}
@@ -658,9 +736,20 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 				: nls.localize('googleWorkspaceOAuth.secretRequired', "Google Workspace requires an OAuth client secret. Use Set OAuth Client Secret on the MCP server, then connect again."));
 		}
 		this._logger.info(`Creating session for scopes: ${scopes.join(' ')}`);
+		let flows = this._createFlows;
+		if (options[MCP_USE_HTTPS_OAUTH_CALLBACK] === true) {
+			const httpsCallback = this._signalCOAuthCallback;
+			if (!httpsCallback || !/^[1-9]\d{0,9}$/.test(String(httpsCallback.windowId)) || this._isGoogleLoopbackOAuth || this._isSignalCMailOAuth) {
+				throw new Error(nls.localize('oauth.httpsCallbackUnavailable', "This connection cannot use the Signal-C HTTPS OAuth callback."));
+			}
+			flows = [{
+				label: nls.localize('oauth.httpsCallback', "Browser Sign-in"),
+				handler: (scopes, progress, token) => this._createWithUrlHandler(scopes, progress, token, httpsCallback),
+			}];
+		}
 		let token: IAuthorizationTokenResponse | undefined;
-		for (let i = 0; i < this._createFlows.length; i++) {
-			const { handler } = this._createFlows[i];
+		for (let i = 0; i < flows.length; i++) {
+			const { handler } = flows[i];
 			try {
 				token = await this._extHostProgress.withProgressFromSource(
 					{ label: this.label, id: this.id },
@@ -675,7 +764,7 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 					break;
 				}
 			} catch (err) {
-				const nextMode = this._createFlows[i + 1]?.label;
+				const nextMode = flows[i + 1]?.label;
 				if (!nextMode) {
 					throw err;
 				}
@@ -693,18 +782,21 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 		if (!token) {
 			throw new Error('Failed to create authentication token');
 		}
-		if (token.scope !== scopes.join(' ')) {
-			this._logger.warn(`Token scopes '${token.scope}' do not match requested scopes '${scopes.join(' ')}'. Overwriting token with what was requested...`);
-			token.scope = scopes.join(' ');
+		const grantedScopes = this._getGrantedScopes(scopes, token);
+		const acceptPartialScopes = options[MCP_ACCEPT_PARTIAL_OAUTH_SCOPES] === true;
+		if (!this._isUsableScopeGrant(scopes, grantedScopes, acceptPartialScopes)) {
+			const missing = scopes.filter(scope => !grantedScopes.includes(scope));
+			throw new Error(nls.localize('oauth.grantMissingScopes', "The provider did not grant the required permissions ({0}).", missing.join(', ')));
 		}
 
 		// Store session for later retrieval
-		const persisted = this._tokenStore.update({ added: [{ ...token, created_at: Date.now() }], removed: [] });
+		const stored: IAuthorizationToken = { ...token, scope: grantedScopes.join(' '), requested_scope: scopes.join(' '), created_at: Date.now() };
+		const persisted = this._tokenStore.update({ added: [stored], removed: [] });
 		if (this._isSignalCMailOAuth) {
 			await persisted;
 		}
 		const session = this._tokenStore.sessions.find(t => t.accessToken === token.access_token)!;
-		this._logger.info(`Created ${token.refresh_token ? 'refreshable' : 'non-refreshable'} session for scopes: ${token.scope}${token.expires_in ? ` that expires in ${token.expires_in} seconds` : ''}`);
+		this._logger.info(`Created ${token.refresh_token ? 'refreshable' : 'non-refreshable'} session for granted scopes: ${stored.scope}${token.expires_in ? ` that expires in ${token.expires_in} seconds` : ''}`);
 		return session;
 	}
 
@@ -728,12 +820,15 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 		this._disposable.dispose();
 	}
 
-	private async _createWithUrlHandler(scopes: string[], progress: vscode.Progress<IProgressStep>, token: vscode.CancellationToken): Promise<IAuthorizationTokenResponse> {
+	private async _createWithUrlHandler(scopes: string[], progress: vscode.Progress<IProgressStep>, token: vscode.CancellationToken, httpsCallback?: ISignalCOAuthCallback): Promise<IAuthorizationTokenResponse> {
 		if (!this._serverMetadata.authorization_endpoint) {
 			throw new Error('Authorization Endpoint required');
 		}
 		if (!this._serverMetadata.token_endpoint) {
 			throw new Error('Token endpoint not available in server metadata');
+		}
+		if (httpsCallback && (new URL(this._serverMetadata.authorization_endpoint).protocol !== 'https:' || new URL(this._serverMetadata.token_endpoint).protocol !== 'https:')) {
+			throw new Error(nls.localize('oauth.httpsCallbackRequiresHttps', "Browser sign-in requires HTTPS authorization and token endpoints."));
 		}
 
 		// Generate PKCE code verifier (random string) and code challenge (SHA-256 hash of verifier)
@@ -742,19 +837,19 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 
 		// Generate a random state value to prevent CSRF
 		const nonce = this.generateRandomString(32);
-		const callbackUri = URI.parse(`${this._initData.environment.appUriScheme}://dynamicauthprovider/${this.authorizationServer.authority}/authorize?nonce=${nonce}`);
-		let state: URI;
-		try {
-			state = await this._extHostUrls.createAppUri(callbackUri);
-		} catch (error) {
-			throw new Error(`Failed to create external URI: ${error}`);
-		}
+		const callbackUri = URI.from({
+			scheme: this._initData.environment.appUriScheme,
+			authority: 'dynamicauthprovider',
+			path: httpsCallback ? '/https/authorize' : `/${this.authorizationServer.authority}/authorize`,
+			query: httpsCallback ? `nonce=${nonce}&windowId=${httpsCallback.windowId}` : `nonce=${nonce}`,
+		});
+		const state = httpsCallback ? `${nonce}.${httpsCallback.windowId}` : (await this._extHostUrls.createAppUri(callbackUri)).toString();
 
 		// Prepare the authorization request URL
 		const authorizationUrl = new URL(this._serverMetadata.authorization_endpoint);
 		authorizationUrl.searchParams.append('client_id', this._clientId);
 		authorizationUrl.searchParams.append('response_type', 'code');
-		authorizationUrl.searchParams.append('state', state.toString());
+		authorizationUrl.searchParams.append('state', state);
 		authorizationUrl.searchParams.append('code_challenge', codeChallenge);
 		authorizationUrl.searchParams.append('code_challenge_method', 'S256');
 		this._configureAuthorizationUrl(authorizationUrl);
@@ -770,41 +865,28 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 			authorizationUrl.searchParams.append('resource', resource);
 		}
 
-		// Use a redirect URI that matches what was registered during dynamic registration
-		const redirectUri = 'https://vscode.dev/redirect';
+		const redirectUri = httpsCallback?.redirectUri ?? 'https://vscode.dev/redirect';
 		authorizationUrl.searchParams.append('redirect_uri', redirectUri);
 
-		const promise = this.waitForAuthorizationCode(callbackUri);
-
-		// Open the browser for user authorization
-		this._logger.info(`Opening authorization URL for scopes: ${scopeString}`);
-		this._logger.trace(`Authorization URL: ${authorizationUrl.toString()}`);
-		const opened = await this._extHostWindow.openUri(authorizationUrl.toString(), {});
-		if (!opened) {
-			throw new CancellationError();
-		}
-		progress.report({
-			message: nls.localize('completeAuth', "Complete the authentication in the browser window that has opened."),
-		});
-
-		// Wait for the authorization code via a redirect
-		let code: string | undefined;
+		const callback = new CancellationTokenSource(token);
 		try {
-			const response = await raceCancellationError(promise, token);
-			code = response.code;
-		} catch (err) {
-			if (isCancellationError(err)) {
-				this._logger.info('Authorization code request was cancelled by the user.');
-				throw err;
+			const authorizationCode = this.waitForAuthorizationCode(callbackUri, callback.token, !!httpsCallback);
+			// The listener can be canceled while the external opener is still pending.
+			void authorizationCode.catch(() => { });
+			this._logger.info(`Opening authorization URL for scopes: ${scopeString}`);
+			const opened = await this._extHostWindow.openUri(authorizationUrl.toString(), {});
+			if (!opened) {
+				throw new CancellationError();
 			}
-			this._logger.error(`Failed to receive authorization code: ${err}`);
-			throw new Error(`Failed to receive authorization code: ${err}`);
+			progress.report({
+				message: nls.localize('completeAuth', "Complete the authentication in the browser window that has opened."),
+			});
+			const { code } = await authorizationCode;
+			this._logger.info(`Authorization code received for scopes: ${scopeString}`);
+			return await this.exchangeCodeForToken(code, codeVerifier, redirectUri);
+		} finally {
+			callback.dispose(true);
 		}
-		this._logger.info(`Authorization code received for scopes: ${scopeString}`);
-
-		// Exchange the authorization code for tokens
-		const tokenResponse = await this.exchangeCodeForToken(code, codeVerifier, redirectUri);
-		return tokenResponse;
 	}
 
 	protected generateRandomString(length: number): string {
@@ -828,11 +910,23 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 			.replace(/=+$/, '');
 	}
 
-	private async waitForAuthorizationCode(expectedState: URI): Promise<{ code: string }> {
-		const result = await this._proxy.$waitForUriHandler(expectedState);
+	private async waitForAuthorizationCode(expectedState: URI, token: vscode.CancellationToken, signalCCallback: boolean): Promise<{ code: string }> {
+		const result = await this._proxy.$waitForUriHandler(expectedState, token);
+		if (signalCCallback) {
+			const params = new URLSearchParams(result.query);
+			const errors = params.getAll('error');
+			const codes = params.getAll('code64');
+			if (errors.length === 1 && errors[0] === 'access_denied' && !codes.length) {
+				throw new CancellationError();
+			}
+			if (!errors.length && codes.length === 1 && /^[A-Za-z0-9_-]{2,10923}$/.test(codes[0]) && codes[0].length % 4 !== 1) {
+				return { code: decodeBase64(codes[0]).toString() };
+			}
+			throw new Error(nls.localize('oauth.httpsCallbackMissingCode', "The provider did not return an authorization code to Signal-C."));
+		}
 		// Extract the code parameter directly from the query string. NOTE, URLSearchParams does not work here because
 		// it will decode the query string and we need to keep it encoded.
-		const codeMatch = /[?&]code=([^&]+)/.exec(result.query || '');
+		const codeMatch = /(?:^|[?&])code=([^&]+)/.exec(result.query || '');
 		if (!codeMatch || codeMatch.length < 2) {
 			// No code parameter found in the query string
 			throw new Error('Authentication failed: No authorization code received');
@@ -855,22 +949,32 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 			'Content-Type': 'application/x-www-form-urlencoded',
 			'Accept': 'application/json',
 		};
+		const registeredMethod = this._tokenEndpointAuthMethod;
+		if (registeredMethod !== undefined && registeredMethod !== 'none' && registeredMethod !== 'client_secret_basic' && registeredMethod !== 'client_secret_post') {
+			throw new Error(nls.localize('unsupportedTokenEndpointAuthMethod', "The OAuth provider registered this client with an unsupported token authentication method."));
+		}
+		const clientSecret = registeredMethod === 'none' ? undefined : this._clientSecret;
+		if ((registeredMethod === 'client_secret_basic' || registeredMethod === 'client_secret_post') && !clientSecret) {
+			throw new Error(nls.localize('missingTokenEndpointClientSecret', "The registered OAuth client requires a client secret."));
+		}
+		if (clientSecret && new URL(tokenEndpoint).protocol !== 'https:') {
+			throw new Error('OAuth client secret authentication requires an HTTPS token endpoint');
+		}
+		// For older or manually configured registrations, retain the server-wide fallback.
 		const methods = this._serverMetadata.token_endpoint_auth_methods_supported;
-		// Keep the existing form authentication when the server supports it or omits this metadata.
-		if (this._clientSecret && Array.isArray(methods) && methods.includes('client_secret_basic') && !methods.includes('client_secret_post')) {
-			if (new URL(tokenEndpoint).protocol !== 'https:') {
-				throw new Error('OAuth client secret authentication requires an HTTPS token endpoint');
-			}
+		const useBasic = registeredMethod === 'client_secret_basic'
+			|| (registeredMethod === undefined && Array.isArray(methods) && methods.includes('client_secret_basic') && !methods.includes('client_secret_post'));
+		if (clientSecret && useBasic) {
 			// OAuth form-encodes each credential before joining them for HTTP Basic (RFC 6749 §2.3.1).
 			const formEncode = (value: string) => new URLSearchParams([['', value]]).toString().slice(1);
-			headers.Authorization = `Basic ${encodeBase64(VSBuffer.fromString(`${formEncode(this._clientId)}:${formEncode(this._clientSecret)}`))}`;
+			headers.Authorization = `Basic ${encodeBase64(VSBuffer.fromString(`${formEncode(this._clientId)}:${formEncode(clientSecret)}`))}`;
 			return { method: 'POST', headers, body: body.toString(), redirect: 'error' };
 		}
 		body.append('client_id', this._clientId);
-		if (this._clientSecret) {
-			body.append('client_secret', this._clientSecret);
+		if (clientSecret) {
+			body.append('client_secret', clientSecret);
 		}
-		return { method: 'POST', headers, body: body.toString(), ...(this._isGoogleLoopbackOAuth || this._isSignalCMailOAuth ? { redirect: 'error' } : {}) };
+		return { method: 'POST', headers, body: body.toString(), ...(clientSecret || this._isSignalCMailOAuth || this._isGoogleLoopbackOAuth ? { redirect: 'error' } : {}) };
 	}
 
 	protected async exchangeCodeForToken(code: string, codeVerifier: string, redirectUri: string): Promise<IAuthorizationTokenResponse> {
@@ -893,6 +997,9 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 		this._logger.info('Exchanging authorization code for token...');
 		this._logger.trace(`Url: ${this._serverMetadata.token_endpoint}`);
 		const request = this._tokenRequestInit(this._serverMetadata.token_endpoint, tokenRequest);
+		if (redirectUri === this._signalCOAuthCallback?.redirectUri) {
+			request.redirect = 'error';
+		}
 		let response: Response;
 		try {
 			response = await this._fetch(this._serverMetadata.token_endpoint, request);
@@ -943,11 +1050,11 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 		const response = await this._fetch(this._serverMetadata.token_endpoint, this._tokenRequestInit(this._serverMetadata.token_endpoint, tokenRequest));
 
 		const result = await response.json();
-		if (isAuthorizationTokenResponse(result)) {
+		if (response.ok && isAuthorizationTokenResponse(result)) {
 			return {
 				...result,
-				// Google normally returns only a new access token when refreshing.
-				...(this._isGoogleLoopbackOAuth || this._isSignalCMailOAuth ? { refresh_token: result.refresh_token ?? refreshToken } : {}),
+				// OAuth servers may issue a replacement refresh token or leave the current one in effect.
+				refresh_token: result.refresh_token ?? refreshToken,
 				created_at: Date.now(),
 			};
 		} else if (isAuthorizationErrorResponse(result) && result.error === AuthorizationErrorType.InvalidClient) {
@@ -962,11 +1069,51 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 		throw new Error(`Invalid authorization token response: ${JSON.stringify(result)}`);
 	}
 
+	private _isUsableScopeGrant(requested: readonly string[], granted: readonly string[], acceptPartial: boolean): boolean {
+		return requested.every(scope => granted.includes(scope))
+			|| (acceptPartial && requested.some(scope => !identityOAuthScopes.has(scope) && granted.includes(scope)));
+	}
+
+	private _getGrantedScopes(requested: readonly string[], token: IAuthorizationTokenResponse): string[] {
+		// OAuth permits omitting scope from a successful response when it is unchanged.
+		if (token.scope === undefined) {
+			return [...requested];
+		}
+		const granted = token.scope.split(' ').filter(Boolean);
+		if (this._isGoogleLoopbackOAuth) {
+			for (const scope of ['email', 'profile']) {
+				const index = granted.indexOf(`https://www.googleapis.com/auth/userinfo.${scope}`);
+				if (index !== -1 && requested.includes(scope)) {
+					granted[index] = scope;
+				}
+			}
+		}
+		if (this._isSignalCMailOAuth && this._isMicrosoftAuth) {
+			// Graph may use unqualified permission names and reports access-token scopes
+			// separately from the identity and refresh tokens issued by the same exchange.
+			const graph = signalCMailOAuth.outlook.resource;
+			for (const scope of [signalCMailOAuth.outlook.scope, signalCMailOAuth.outlook.sendScope, signalCMailOAuth.outlook.calendarScope]) {
+				const index = granted.findIndex(value => [scope.toLowerCase(), scope.slice(graph.length).toLowerCase()].includes(value.toLowerCase()));
+				if (index !== -1) {
+					granted[index] = scope;
+				}
+			}
+			if (token.id_token) {
+				granted.push(...requested.filter(scope => scope === 'openid' || scope === 'profile'));
+			}
+			if (token.refresh_token && requested.includes('offline_access')) {
+				granted.push('offline_access');
+			}
+		}
+		return [...new Set(granted)];
+	}
+
 	protected async _generateNewClientId(): Promise<void> {
 		try {
-			const registration = await fetchDynamicRegistration(this._serverMetadata, this._initData.environment.appName, this._resourceMetadata?.scopes_supported);
+			const registration = await fetchDynamicRegistration(this._serverMetadata, this._initData.environment.appName, this._resourceMetadata?.scopes_supported, this._initData.environment.appUriScheme);
 			this._clientId = registration.client_id;
 			this._clientSecret = registration.client_secret;
+			this._tokenEndpointAuthMethod = registration.token_endpoint_auth_method;
 			this._onDidChangeClientId.fire();
 		} catch (err) {
 			// When DCR fails, try to prompt the user for a client ID and client secret
@@ -979,6 +1126,7 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 				}
 				this._clientId = clientDetails.clientId;
 				this._clientSecret = clientDetails.clientSecret;
+				this._tokenEndpointAuthMethod = undefined;
 				this._logger.info(`User provided client ID for ${this.authorizationServer.toString()}`);
 				if (clientDetails.clientSecret) {
 					this._logger.info(`User provided client secret for ${this.authorizationServer.toString()}`);
@@ -995,11 +1143,15 @@ export class DynamicAuthProvider implements vscode.AuthenticationProvider {
 	}
 }
 
+const identityOAuthScopes = new Set(['openid', 'profile', 'email', 'offline_access']);
+
 export type IAuthorizationToken = IAuthorizationTokenResponse & {
 	/**
 	 * The time when the token was created, in milliseconds since the epoch.
 	 */
 	created_at: number;
+	/** The lookup scopes used at authorization time, which can differ from the actual OAuth grant. */
+	requested_scope?: string;
 };
 
 export class TokenStore implements Disposable {
@@ -1019,8 +1171,8 @@ export class TokenStore implements Disposable {
 		this._disposable = new DisposableStore();
 		this._tokensObservable = observableValue<IAuthorizationToken[]>('tokens', initialTokens);
 		this._sessionsObservable = derivedOpts(
-			{ equalsFn: (a, b) => arraysEqual(a, b, (a, b) => a.accessToken === b.accessToken) },
-			(reader) => this._tokensObservable.read(reader).map(t => this._getSessionFromToken(t))
+			{ equalsFn: (a, b) => arraysEqual(a, b, (a, b) => a.accessToken === b.accessToken && scopesMatch(a.scopes, b.scopes)) },
+			(reader) => this._tokensObservable.read(reader).map(t => this.getSessionFromToken(t))
 		);
 		this._disposable.add(this._registerChangeEventAutorun());
 		this._disposable.add(this._persistence.onDidChange((tokens) => this._tokensObservable.set(tokens, undefined)));
@@ -1090,12 +1242,15 @@ export class TokenStore implements Disposable {
 
 			const added: vscode.AuthenticationSession[] = [];
 			const removed: vscode.AuthenticationSession[] = [];
+			const changed: vscode.AuthenticationSession[] = [];
 
-			// Find added sessions
+			// The provider can reuse a bearer token while changing its granted scopes.
 			for (const current of currentSessions) {
-				const exists = previousSessions.some(prev => prev.accessToken === current.accessToken);
-				if (!exists) {
+				const previous = previousSessions.find(prev => prev.accessToken === current.accessToken);
+				if (!previous) {
 					added.push(current);
+				} else if (!scopesMatch(previous.scopes, current.scopes)) {
+					changed.push(current);
 				}
 			}
 
@@ -1108,9 +1263,9 @@ export class TokenStore implements Disposable {
 			}
 
 			// Fire the event if there are any changes
-			if (added.length > 0 || removed.length > 0) {
+			if (added.length > 0 || removed.length > 0 || changed.length > 0) {
 				this._logger.trace(`Sessions changed: added ${added.length}, removed ${removed.length}`);
-				this._onDidChangeSessions.fire({ added, removed, changed: [] });
+				this._onDidChangeSessions.fire({ added, removed, changed });
 			}
 
 			// Update previous sessions reference
@@ -1118,7 +1273,7 @@ export class TokenStore implements Disposable {
 		});
 	}
 
-	private _getSessionFromToken(token: IAuthorizationTokenResponse): vscode.AuthenticationSession {
+	getSessionFromToken(token: IAuthorizationTokenResponse): vscode.AuthenticationSession {
 		let claims: IAuthorizationJWTClaims | undefined;
 		if (token.id_token) {
 			try {
@@ -1134,7 +1289,7 @@ export class TokenStore implements Disposable {
 				// log
 			}
 		}
-		// An explicit empty `token.scope` is authoritative (createSession/refresh stamp the requested scopes onto the token); only fall back to the JWT claims when scope is genuinely absent.
+		// An explicit empty scope is authoritative. Fall back to JWT claims only for older records that omitted scope.
 		const scopes = token.scope !== undefined
 			? (token.scope ? token.scope.split(' ') : [])
 			: (claims?.scope ? claims.scope.split(' ') : []);

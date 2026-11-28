@@ -46,6 +46,7 @@ suite('Devin Subscription Agent', () => {
 
 	function fixture(modelCatalog = catalog, mcpConfiguration?: IDevinMcpConfiguration, logService?: ILogService, configuration?: ConstructorParameters<typeof DevinSubscriptionAgent>[4]) {
 		const transports: TestAcpTransport[] = [];
+		const probes: TestAcpTransport[] = [];
 		const launches: { args: readonly string[]; env: NodeJS.ProcessEnv }[] = [];
 		const events: AgentSignal[] = [];
 		let onPrompt: ((transport: TestAcpTransport, request: Record<string, unknown>) => void) | undefined;
@@ -53,9 +54,20 @@ suite('Devin Subscription Agent', () => {
 		let onLoad: typeof onPrompt;
 		let onConfig: typeof onPrompt;
 		let onInitialize: typeof onPrompt;
+		let onProbe: typeof onPrompt;
 		const agent = store.add(new DevinSubscriptionAgent('devin.exe', {
 			listModels: async () => modelCatalog,
-			createClient: (_cwd, args, env) => {
+			createClient: (directory, args, env) => {
+				if (directory === undefined) {
+					const probe = new TestAcpTransport();
+					probes.push(probe);
+					probe.handle = request => {
+						assert.strictEqual(request.method, 'initialize');
+						if (onProbe) { onProbe(probe, request); }
+						else { probe.reply(request, { protocolVersion: 1, agentCapabilities: {} }); }
+					};
+					return new AcpClient(probe);
+				}
 				const configOptions = [{ id: 'model-choice', category: 'model', type: 'select', currentValue: 'swe-2-high', options: [{ value: 'swe-2-high', name: 'SWE-2' }] }];
 				launches.push({ args, env });
 				const transport = new TestAcpTransport();
@@ -81,7 +93,7 @@ suite('Devin Subscription Agent', () => {
 			},
 		}, mcpConfiguration, logService, configuration));
 		store.add(agent.onDidChatProgress(event => events.push(event)));
-		return { agent, transports, launches, events, set onPrompt(value: typeof onPrompt) { onPrompt = value; }, set onNew(value: typeof onNew) { onNew = value; }, set onLoad(value: typeof onLoad) { onLoad = value; }, set onConfig(value: typeof onConfig) { onConfig = value; }, set onInitialize(value: typeof onInitialize) { onInitialize = value; } };
+		return { agent, transports, probes, launches, events, set onProbe(value: typeof onPrompt) { onProbe = value; }, set onPrompt(value: typeof onPrompt) { onPrompt = value; }, set onNew(value: typeof onNew) { onNew = value; }, set onLoad(value: typeof onLoad) { onLoad = value; }, set onConfig(value: typeof onConfig) { onConfig = value; }, set onInitialize(value: typeof onInitialize) { onInitialize = value; } };
 	}
 
 	function approvalFixture() {
@@ -422,12 +434,33 @@ suite('Devin Subscription Agent', () => {
 		f.onInitialize = (transport, request) => { servers = []; transport.reply(request, { protocolVersion: 1, agentCapabilities: { loadSession: true } }); };
 		await f.agent.authenticate(DEVIN_SUBSCRIPTION_RESOURCE, 'browser-token');
 		await f.agent.chats.createChat(chat, owner, { workingDirectories: [cwd] });
-		await assert.rejects(f.agent.chats.sendMessage(chat, 'message', [cwd], undefined, 'mcp-stale'), isCancellationError);
-		assert.ok(!f.transports[0].sent.some(item => item.method === 'session/new' || item.method === 'session/prompt'));
-		await f.agent.chats.sendMessage(chat, 'retry', [cwd], undefined, 'mcp-fresh');
-		const request = f.transports[1].sent.find(item => item.method === 'session/new')!;
+		await f.agent.chats.sendMessage(chat, 'message', [cwd], undefined, 'mcp-fresh');
+		assert.strictEqual(f.transports.length, 1);
+		assert.strictEqual(f.transports[0].sent.filter(item => item.method === 'session/prompt').length, 1);
+		const request = f.transports[0].sent.find(item => item.method === 'session/new')!;
 		assert.ok(isAcpRecord(request.params));
 		assert.deepStrictEqual(request.params.mcpServers, []);
+	});
+
+	test('a client refresh during session/load reconciles the gateway and sends the follow-up exactly once', async () => {
+		const f = fixture(catalog, { onDidChange: Event.None, getServers: async (_owner, clients = []) =>
+			clients.flatMap(client => client.customizations.map(ref => ({ name: ref.name, command: 'test-mcp', args: [ref.nonce!], env: [] }))) });
+		await f.agent.authenticate(DEVIN_SUBSCRIPTION_RESOURCE, 'browser-token');
+		await f.agent.chats.createChat(chat, owner, { workingDirectories: [cwd] });
+		const handle = f.agent.getOrCreateActiveClient(chat, owner, { clientId: 'editor' });
+		handle.customizations = [clientBundle('gateway', 'first')];
+		await f.agent.chats.sendMessage(chat, 'first', [cwd], undefined, 'first');
+		await f.agent.chats.releaseChat(chat, owner);
+		const revisions: unknown[] = [];
+		f.onLoad = (transport, request) => {
+			assert.ok(isAcpRecord(request.params));
+			revisions.push(request.params.mcpServers);
+			if (revisions.length === 1) { handle.customizations = [clientBundle('gateway', 'second')]; }
+			transport.reply(request, {});
+		};
+		await f.agent.chats.sendMessage(chat, 'look at browser', [cwd], undefined, 'follow-up');
+		assert.deepStrictEqual(revisions, ['first', 'second'].map(revision => [{ name: 'gateway', command: 'test-mcp', args: [revision], env: [] }]));
+		assert.deepStrictEqual(f.transports.slice(1).map(transport => transport.sent.filter(item => item.method === 'session/prompt').length), [0, 1]);
 	});
 
 	test('reconciles MCP access when a live owner reference changes without a configuration event', async () => {
@@ -535,6 +568,51 @@ suite('Devin Subscription Agent', () => {
 		assert.deepStrictEqual(agent.models.get(), []);
 	});
 
+	test('discovers ACP image input before the first turn and sends inline image bytes', async () => {
+		const f = fixture();
+		f.onProbe = f.onInitialize = (transport, request) => transport.reply(request, { protocolVersion: 1, agentCapabilities: { promptCapabilities: { image: true } } });
+		await f.agent.authenticate(DEVIN_SUBSCRIPTION_RESOURCE, 'browser-token');
+		await f.agent.refreshModels();
+		assert.deepStrictEqual([f.agent.models.get()[0].supportsVision, f.probes.map(probe => probe.sent.map(request => request.method)), f.launches.length], [true, [['initialize']], 0]);
+		await f.agent.chats.createChat(chat, owner, { workingDirectories: [cwd], model: { id: 'swe-2-high' } });
+		const image: MessageAttachment = { type: MessageAttachmentKind.EmbeddedResource, label: 'image.png', contentType: 'image/png', data: 'AA==' };
+		await f.agent.chats.sendMessage(chat, 'inspect', [cwd], [image], 'image-turn');
+		const request = f.transports[0].sent.find(r => r.method === 'session/prompt');
+		assert.ok(isAcpRecord(request?.params));
+		assert.deepStrictEqual(request.params.prompt, [{ type: 'text', text: 'inspect' }, { type: 'image', mimeType: 'image/png', data: 'AA==' }]);
+	});
+
+	test('a model-specific connection declining images updates just that model and rejects image attachments', async () => {
+		const f = fixture({ families: [{ variants: [catalog.families[0].variants[0], { model_uid: 'other', label: 'Other', max_context_tokens: 10000 }] }] });
+		f.onProbe = (transport, request) => transport.reply(request, { protocolVersion: 1, agentCapabilities: { promptCapabilities: { image: true } } });
+		f.onInitialize = (transport, request) => transport.reply(request, { protocolVersion: 1, agentCapabilities: { promptCapabilities: { embeddedContext: true } } });
+		await f.agent.authenticate(DEVIN_SUBSCRIPTION_RESOURCE, 'browser-token');
+		await f.agent.chats.createChat(chat, owner, { workingDirectories: [cwd], model: { id: 'swe-2-high' } });
+		const image: MessageAttachment = { type: MessageAttachmentKind.EmbeddedResource, label: 'image.png', contentType: 'image/png', data: 'AA==' };
+		await assert.rejects(f.agent.chats.sendMessage(chat, 'inspect', [cwd], [image], 'image-turn'), /did not advertise support/);
+		await f.agent.refreshModels();
+		assert.deepStrictEqual(f.agent.models.get().map(m => [m.id, m.supportsVision]), [['swe-2-high', false], ['other', true]]);
+		assert.ok(!f.transports[0].sent.some(r => r.method === 'session/prompt'));
+	});
+
+	test('concurrent refreshes share a bounded capability probe and retry after a timeout', async () => {
+		const f = fixture();
+		const started = new DeferredPromise<void>();
+		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		try {
+			f.onProbe = () => { void started.complete(); };
+			const first = f.agent.authenticate(DEVIN_SUBSCRIPTION_RESOURCE, 'browser-token');
+			await started.p;
+			const second = f.agent.refreshModels();
+			await clock.tickAsync(3000);
+			await Promise.all([first, second]);
+			assert.deepStrictEqual([f.probes.length, f.agent.models.get()[0].supportsVision, clock.countTimers()], [1, false, 0]);
+			f.onProbe = (transport, request) => transport.reply(request, { protocolVersion: 1, agentCapabilities: { promptCapabilities: { image: true } } });
+			await f.agent.refreshModels();
+			assert.deepStrictEqual([f.probes.length, f.agent.models.get()[0].supportsVision, f.launches.length], [2, true, 0]);
+		} finally { clock.restore(); }
+	});
+
 	test('defers the client, uses the selected model, and streams to the exact host turn', async () => {
 		const f = fixture();
 		await f.agent.authenticate(DEVIN_SUBSCRIPTION_RESOURCE, 'browser-token');
@@ -606,6 +684,8 @@ suite('Devin Subscription Agent', () => {
 		await f.agent.chats.sendMessage(chat, 'read', [cwd], undefined, 'host-turn');
 		const part = (await f.agent.chats.getMessages(chat, owner))[0].responseParts[0];
 		assert.ok(part.kind === ResponsePartKind.ToolCall && part.toolCall.status === ToolCallStatus.Completed);
+		// The host echoes this ACP-owned completion even though Devin has no client tool waiter.
+		f.agent.onClientToolCallComplete();
 		assert.strictEqual(part.toolCall.toolInput, JSON.stringify({ path: 'D:/project with spaces/README.md' }, undefined, 2));
 		assert.deepStrictEqual(part.toolCall.content, [{ type: ToolResultContentType.Text, text: 'file content 🌎' }]);
 		assert.strictEqual(f.events.filter(event => event.kind === 'action' && event.action.type === ActionType.ChatToolCallContentChanged).length, 1);

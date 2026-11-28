@@ -63,9 +63,17 @@ export function activate(context: ExtensionContext): void {
 							assert.ok(request && typeof request.body === 'string');
 							const body = JSON.parse(request.body);
 							assert.strictEqual(body.code, 'native-fixture-code');
-							assert.deepStrictEqual(Object.keys(body).sort(), ['code', 'code_verifier']);
+							assert.strictEqual(body.grant_type, 'authorization_code');
+							assert.strictEqual(body.client_id, auth.DEVIN_CLIENT_ID);
+							assert.strictEqual(body.cli_pkce_marker, '1');
+							const keys = ['cli_pkce_marker', 'client_id', 'code', 'code_verifier', 'grant_type'];
+							if (body.redirect_uri !== undefined) {
+								assert.ok(/^http:\/\/127\.0\.0\.1:\d+\/callback$/.test(body.redirect_uri));
+								keys.push('redirect_uri');
+							}
+							assert.deepStrictEqual(Object.keys(body).sort(), keys.sort());
 							exchanges++;
-							return Response.json({ session_token: `native-fixture-token-${process.pid}-${exchanges}` });
+							return Response.json({ token: `native-fixture-token-${process.pid}-${exchanges}`, webapp_host: 'https://app.devin.ai' });
 						},
 					}),
 				};

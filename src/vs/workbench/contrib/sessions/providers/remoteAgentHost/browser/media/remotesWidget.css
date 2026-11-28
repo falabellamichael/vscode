@@ -470,6 +470,8 @@
 	&.remotes-empty-row {
 		background-color: transparent;
 	}
+.remotes-widget .monaco-list-row[data-parity=odd]:not(.focused):not(.selected):not(:hover):not(.hovered) .monaco-table-tr:not(.remotes-group-row) {
+	background-color: var(--vscode-agentsPanel-background, var(--vscode-sideBar-background, var(--vscode-editor-background)));
 }
 
 .remotes-widget .remotes-name,

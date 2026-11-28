@@ -291,6 +291,9 @@ export interface IProductConfiguration {
 	readonly authClientIdMetadataUrl?: string;
 	/** Public Microsoft desktop app ID with http://localhost/oauth/callback registered for Outlook mail. */
 	readonly signalCOutlookOAuthClientId?: string;
+	readonly signalCGmailOAuthClientFile?: string;
+	/** Public HTTPS callback for registered Signal-C desktop MCP OAuth clients. */
+	readonly signalCOAuthRedirectUri?: string;
 
 	readonly 'configurationSync.store'?: ConfigurationSyncStore;
 

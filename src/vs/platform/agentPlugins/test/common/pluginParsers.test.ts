@@ -209,16 +209,16 @@ suite('pluginParsers', () => {
 			});
 		});
 
-		test('preserves VS Code OAuth client configuration', () => {
+		test('preserves the OAuth client and HTTPS callback requested by a plugin', () => {
 			assert.deepStrictEqual(normalizeMcpServerConfiguration({
 				type: 'http',
 				url: 'https://mcp.slack.com/mcp',
-				oauth: { clientId: 'vscode-client-id' },
+				oauth: { clientId: 'vscode-client-id', useHttpsCallback: true },
 			}), {
 				type: McpServerType.REMOTE,
 				url: 'https://mcp.slack.com/mcp',
 				headers: undefined,
-				oauth: { clientId: 'vscode-client-id' },
+				oauth: { clientId: 'vscode-client-id', useHttpsCallback: true },
 				dev: undefined,
 			});
 		});

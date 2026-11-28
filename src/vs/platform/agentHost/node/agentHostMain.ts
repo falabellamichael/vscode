@@ -29,6 +29,8 @@ import { IAgentHostCompletions } from './agentHostCompletions.js';
 import { IAgentHostClientConnectionService } from './agentHostClientConnectionService.js';
 import { CopilotAgent } from './copilot/copilotAgent.js';
 import { DevinSubscriptionAgent } from './acp/devinSubscriptionAgent.js';
+import { ReachChatAgent } from './reach/reachChatAgent.js';
+import { CohereChatAgent } from './cohere/cohereChatAgent.js';
 import { DevinMcpConfiguration } from './acp/devinMcpConfiguration.js';
 import { DevinClientMcpConfiguration } from './acp/devinClientMcpConfiguration.js';
 import { AgentHostDevinExecutableEnvVar, getWindowsDevinExecutable } from '../common/devinAgentConfiguration.js';
@@ -246,6 +248,10 @@ async function startAgentHost(): Promise<void> {
 		}
 		markStartupPhase('providers');
 		providerService.registerProvider(instantiationService.createInstance(CopilotAgent));
+		if (utilityProcessServer) {
+			providerService.registerProvider(new ReachChatAgent(fileService, undefined, agentConfigurationService));
+			providerService.registerProvider(new CohereChatAgent(fileService));
+		}
 		const configuredDevin = process.env[AgentHostDevinExecutableEnvVar] || 'devin';
 		const installedDevin = isWindows && configuredDevin === 'devin' ? getWindowsDevinExecutable(process.env) : undefined;
 		const devinExecutable = (installedDevin ? await findExecutable(installedDevin) : undefined) ?? await findExecutable(configuredDevin);

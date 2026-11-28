@@ -8,9 +8,12 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 // These endpoints match SimpleRAG and Devin's current public browser flow.
-// The installed official client exchanges only a code and PKCE verifier.
+// The exchange mirrors SimpleRAG's working sign-in: an authorization-code
+// grant with the Devin CLI client id, the loopback redirect when present,
+// and the PKCE verifier.
 export const DEVIN_AUTHORIZE_URL = 'https://app.devin.ai/auth/cli/continue';
 export const DEVIN_TOKEN_URL = 'https://api.devin.ai/auth/cli/token';
+export const DEVIN_CLIENT_ID = '3GUryQ7ldAeKEuD2obYnppsnmj58eP5u';
 
 export interface SignInOptions {
 	readonly openExternal: (url: string) => Promise<boolean>;
@@ -117,7 +120,15 @@ export async function signInToDevin(options: SignInOptions): Promise<string> {
 		const response = await (options.request ?? fetch)(DEVIN_TOKEN_URL, {
 			method: 'POST', headers: { 'Content-Type': 'application/json' }, redirect: 'error',
 			signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-			body: JSON.stringify({ code, code_verifier: verifier }),
+			body: JSON.stringify({
+				grant_type: 'authorization_code',
+				client_id: DEVIN_CLIENT_ID,
+				code,
+				// The manual browser-code flow has no loopback redirect to echo back.
+				...(redirectUri ? { redirect_uri: redirectUri } : {}),
+				code_verifier: verifier,
+				cli_pkce_marker: '1',
+			}),
 		});
 		if (!response.ok) {
 			throw new Error(`Devin token exchange failed (HTTP ${response.status}).`);
@@ -127,9 +138,13 @@ export async function signInToDevin(options: SignInOptions): Promise<string> {
 			throw new Error('Devin did not return a valid sign-in response.');
 		}
 		const record = data as Record<string, unknown>;
-		const token = record.session_token;
-		if (typeof token !== 'string' || !token.trim()) {
-			throw new Error('Devin did not return a session token.');
+		// The live exchange returns { token, webapp_host }; devin_session_token and
+		// session_token are accepted as older field names.
+		const token = [record.devin_session_token, record.session_token, record.token].find((value): value is string => typeof value === 'string' && !!value.trim());
+		if (!token) {
+			// Key names only: response values may carry credentials and stay private.
+			const keys = Object.keys(record).sort().slice(0, 12).join(', ');
+			throw new Error(`Devin did not return a session token${keys ? ` (response keys: ${keys})` : ''}.`);
 		}
 		return token;
 	} finally {

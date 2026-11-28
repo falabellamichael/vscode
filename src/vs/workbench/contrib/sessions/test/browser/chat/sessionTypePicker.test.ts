@@ -1523,6 +1523,22 @@ suite('SessionTypePicker', () => {
 		});
 	});
 
+	test('a completed sign-in cannot replace a newer provider choice', async () => {
+		const first = { providerId: 'local', sessionTypeId: 'reach' };
+		const next = { providerId: 'local', sessionTypeId: 'codex' };
+		management.setSessionTypes([sessionType('local', 'reach', 'REACH'), sessionType('local', 'codex', 'Codex')]);
+		const signIn = new DeferredPromise<boolean>();
+		const picker = createPicker(disposables, session, management, storage, {
+			prepareSessionTypeSelection: async pick => pick.sessionTypeId === 'reach' ? signIn.p : true,
+		});
+		picker.setFolderSource(constObservable(folder));
+		const pending = picker.prepareAndPick(first);
+		await picker.prepareAndPick(next);
+		await signIn.complete(true);
+		await pending;
+		assert.deepStrictEqual(picker.selectedPick, next);
+	});
+
 	test('preserves the user selection when preparation recomputes the same pick', async () => {
 		const folder = URI.file('/local');
 		const cloudSession = createFakeSession('cloud', 'cloud', URI.parse('github-remote-file://github/microsoft/vscode/HEAD'));

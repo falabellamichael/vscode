@@ -7,8 +7,9 @@ import './media/customViewGridPart.css';
 import { $, addDisposableListener, EventType, getWindow, isAncestorOfActiveElement, scheduleAtNextAnimationFrame } from '../../../base/browser/dom.js';
 import { DomScrollableElement } from '../../../base/browser/ui/scrollbar/scrollableElement.js';
 import { Disposable, MutableDisposable, toDisposable } from '../../../base/common/lifecycle.js';
-import { autorun } from '../../../base/common/observable.js';
+import { autorun, constObservable } from '../../../base/common/observable.js';
 import { ScrollbarVisibility } from '../../../base/common/scrollable.js';
+import { HoverPosition } from '../../../base/browser/ui/hover/hoverWidget.js';
 import { HiddenItemStrategy, MenuWorkbenchToolBar } from '../../../platform/actions/browser/toolbar.js';
 import { MenuItemAction } from '../../../platform/actions/common/actions.js';
 import { IInstantiationService } from '../../../platform/instantiation/common/instantiation.js';
@@ -17,6 +18,9 @@ import { AGENTS_CENTERED_CONTENT_MAX_WIDTH } from '../../../workbench/contrib/se
 import { activeSessionViewBackground, activeSessionViewForeground } from '../../../workbench/contrib/sessions/common/theme.js';
 import { AbstractCustomView, ICustomViewDescriptor } from '../../../workbench/contrib/sessions/browser/customView.js';
 import { ChatPillActionViewItem } from '../../../workbench/browser/chatPills.js';
+import { MenuActivityBar, MenuActivityBarSize } from '../../../workbench/browser/parts/activitybar/menuActivityBar.js';
+import { IWindowCommandContext } from '../../../workbench/common/windowCommandContext.js';
+import { localize } from '../../../nls.js';
 
 /**
  * A leaf of the custom view grid. Owns the shared chrome — a header with the
@@ -111,6 +115,21 @@ export class CustomViewNode extends Disposable {
 		this.element.appendChild(this._scrollable.getDomNode());
 
 		this._view.render(this._contentEl);
+
+		if (descriptor.activityBar) {
+			// The same icon-only strip the Session Activity Bar is: docked at the
+			// right edge of the view's chrome, over the content area.
+			const activityBar = this._register(instantiationService.createInstance(MenuActivityBar, this.element, {
+				menuId: descriptor.activityBar.menuId,
+				contextMenuId: descriptor.activityBar.contextMenuId,
+				ariaLabel: localize('customViewActivityBar', "Activity Bar"),
+				telemetrySource: 'customViewActivityBar',
+				size: constObservable(MenuActivityBarSize.Compact),
+				hoverPosition: HoverPosition.LEFT,
+				getActionsContext: () => ({ windowId: getWindow(this.element).vscodeWindowId } satisfies IWindowCommandContext),
+			}));
+			activityBar.element.classList.add('session-activity-bar', 'docked', 'floating', 'custom-view-activity-bar');
+		}
 
 		// The content grows and shrinks as the view loads, so keep the scrollbar in sync with it.
 		const resizeObserver = new ResizeObserver(() => this._scrollable.scanDomNode());

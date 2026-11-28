@@ -31,7 +31,7 @@ import { IThemeService, registerThemingParticipant, IColorTheme, ICssStyleCollec
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { IContextKeyService, IContextKey, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
-import { badgeBackground, contrastBorder, badgeForeground, listActiveSelectionForeground, listInactiveSelectionForeground, listHoverForeground, listFocusForeground, editorBackground, foreground, listActiveSelectionBackground, listInactiveSelectionBackground, listFocusBackground, listHoverBackground, registerColor, tableOddRowsBackgroundColor, asCssVariable } from '../../../../platform/theme/common/colorRegistry.js';
+import { badgeBackground, contrastBorder, badgeForeground, listActiveSelectionForeground, listInactiveSelectionForeground, listHoverForeground, listFocusForeground, foreground, listActiveSelectionBackground, listInactiveSelectionBackground, listFocusBackground, listHoverBackground, registerColor, tableOddRowsBackgroundColor, asCssVariable } from '../../../../platform/theme/common/colorRegistry.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { EditorExtensionsRegistry } from '../../../../editor/browser/editorExtensions.js';
 import { WorkbenchTable } from '../../../../platform/list/browser/listService.js';
@@ -41,7 +41,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { MenuRegistry, MenuId, isIMenuItem } from '../../../../platform/actions/common/actions.js';
 import { IListAccessibilityProvider } from '../../../../base/browser/ui/list/listWidget.js';
-import { WORKBENCH_BACKGROUND } from '../../../common/theme.js';
+import { PANEL_BACKGROUND, WORKBENCH_BACKGROUND } from '../../../common/theme.js';
 import { IKeybindingItemEntry, IKeybindingsEditorPane } from '../../../services/preferences/common/preferences.js';
 import { keybindingsRecordKeysIcon, keybindingsSortIcon, keybindingsAddIcon, preferencesClearInputIcon, keybindingsEditIcon } from './preferencesIcons.js';
 import { ITableRenderer, ITableVirtualDelegate } from '../../../../base/browser/ui/table/table.js';
@@ -525,7 +525,7 @@ export class KeybindingsEditor extends EditorPane<IKeybindingsEditorMemento> imp
 				accessibilityProvider: new AccessibilityProvider(this.configurationService),
 				keyboardNavigationLabelProvider: { getKeyboardNavigationLabel: (e: IKeybindingItemEntry) => e.keybindingItem.commandLabel || e.keybindingItem.command },
 				overrideStyles: {
-					listBackground: editorBackground
+					listBackground: PANEL_BACKGROUND
 				},
 				multipleSelectionSupport: false,
 				setRowLineHeight: false,

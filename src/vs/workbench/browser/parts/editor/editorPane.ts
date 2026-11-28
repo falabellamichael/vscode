@@ -112,6 +112,7 @@ export abstract class EditorPane<MementoType extends object = object> extends Co
 
 	override create(parent: HTMLElement): void {
 		super.create(parent);
+		parent.setAttribute('data-editor-id', this.getId());
 
 		// Create Editor
 		this.createEditor(parent);

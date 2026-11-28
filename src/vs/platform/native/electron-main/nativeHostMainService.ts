@@ -53,7 +53,11 @@ import { CancellationError, getErrorMessage } from '../../../base/common/errors.
 import { extract, validateZip, zip, type IFile } from '../../../base/node/zip.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { IProxyAuthService } from './auth.js';
-import { fetchReachAssistantModels, requestReachAssistant } from './reachAssistant.js';
+import { fetchReachAssistantModels } from '../common/reachChatTransport.js';
+import { ReachAssistantTurns } from './reachAssistantTurns.js';
+import type { ReachWorkspaceFileRequest } from '../common/native.js';
+import { accessReachWorkspaceFile } from '../node/reachWorkspaceFile.js';
+import { authorizeQuickBooksSandbox, reauthorizeQuickBooksSandbox } from './quickBooksOAuth.js';
 import { fetchAssistantNewsFeeds } from './assistantNews.js';
 import { fetchAssistantWeatherForecast } from './assistantWeather.js';
 import { AuthInfo, Credentials, IRequestService } from '../../request/common/request.js';
@@ -107,8 +111,14 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		this.gpuCompositingState = this._register(new GPUCompositingState(gpuProcessMainService));
 		this.agentsWindowInvitations = this._register(new AgentsWindowInvitationState(Date.now, applicationStorageService));
 		this.onDidChangeAgentHostEditorState = this.agentsWindowInvitations.onDidChange;
-		this._register(windowsMainService.onDidDestroyWindow(window => this.agentsWindowInvitations.resetWindow(window.id, false)));
-		this._register(lifecycleMainService.onWillLoadWindow(event => this.agentsWindowInvitations.resetWindow(event.window.id, event.reason === LoadReason.RELOAD)));
+		this._register(windowsMainService.onDidDestroyWindow(window => {
+			this.agentsWindowInvitations.resetWindow(window.id, false);
+			this.reachAssistantTurns.finishWindow(window.id);
+		}));
+		this._register(lifecycleMainService.onWillLoadWindow(event => {
+			this.agentsWindowInvitations.resetWindow(event.window.id, event.reason === LoadReason.RELOAD);
+			this.reachAssistantTurns.finishWindow(event.window.id);
+		}));
 
 		// Events
 		{
@@ -828,6 +838,42 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		window?.setApplicationBadge(badge);
 	}
 
+	private readonly quickBooksSandboxOperations = this._register(new DisposableMap<string, CancellationTokenSource>());
+
+	async authorizeQuickBooksSandbox(windowId: number | undefined, clientId: string, clientSecret: string, operationId: string): Promise<string> {
+		return this.runQuickBooksSandboxAuthorization(windowId, operationId, async token => {
+			const { net } = await import('electron');
+			return authorizeQuickBooksSandbox(clientId, clientSecret, this.environmentMainService.userDataPath, url => shell.openExternal(url), token,
+				(url, options) => net.fetch(url, options));
+		});
+	}
+
+	async reauthorizeQuickBooksSandbox(windowId: number | undefined, tokenStorePath: string, operationId: string): Promise<void> {
+		return this.runQuickBooksSandboxAuthorization(windowId, operationId, async token => {
+			const { net } = await import('electron');
+			return reauthorizeQuickBooksSandbox(tokenStorePath, this.environmentMainService.userDataPath, url => shell.openExternal(url), token,
+				(url, options) => net.fetch(url, options));
+		});
+	}
+
+	private async runQuickBooksSandboxAuthorization<T>(windowId: number | undefined, operationId: string, task: (token: CancellationToken) => Promise<T>): Promise<T> {
+		const key = `${windowId}:${operationId}`;
+		if (this.quickBooksSandboxOperations.has(key)) {
+			throw new Error('This QuickBooks sign-in is already active.');
+		}
+		const source = new CancellationTokenSource();
+		this.quickBooksSandboxOperations.set(key, source);
+		try {
+			return await task(source.token);
+		} finally {
+			this.quickBooksSandboxOperations.deleteAndDispose(key);
+		}
+	}
+
+	async cancelQuickBooksSandboxAuthorization(windowId: number | undefined, operationId: string): Promise<void> {
+		this.quickBooksSandboxOperations.get(`${windowId}:${operationId}`)?.cancel();
+	}
+
 	async requestReachAuthentication(_windowId: number | undefined, request: ReachAuthenticationRequest): Promise<{ status: number; data?: unknown }> {
 		const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'application/json', 'ngrok-skip-browser-warning': '1' });
 		let body: Record<string, string>;
@@ -853,7 +899,7 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		return { status: response.status, data: response.ok ? await response.json().catch(() => undefined) : undefined };
 	}
 
-	private readonly reachAssistantRequests = new Map<string, { windowId: number | undefined; requestId: string; controller: AbortController }>();
+	private readonly reachAssistantTurns = this._register(new ReachAssistantTurns(async (url, options) => (await import('electron')).net.fetch(url, options)));
 	private readonly reachAssistantChunks = new Emitter<{ requestId: string; delta: string }>();
 	readonly onDidReceiveReachAssistantChunk = this.reachAssistantChunks.event;
 
@@ -862,9 +908,9 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		return fetchAssistantNewsFeeds(scope, (url, options) => net.fetch(url, options));
 	}
 
-	async readAssistantWeatherForecast(_windowId: number | undefined, day: AssistantWeatherDay, location: AssistantWeatherLocation, apiKey: string) {
+	async readAssistantWeatherForecast(_windowId: number | undefined, day: AssistantWeatherDay, location: AssistantWeatherLocation, pelmorexKey: string, allowPublicFallback?: boolean) {
 		const { net } = await import('electron');
-		return fetchAssistantWeatherForecast(day, location, apiKey, (url, options) => net.fetch(url, options));
+		return fetchAssistantWeatherForecast(day, location, pelmorexKey, (url, options) => net.fetch(url, options), allowPublicFallback);
 	}
 
 	async listReachAssistantModels(_windowId: number | undefined, accessToken: string) {
@@ -872,27 +918,17 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		return fetchReachAssistantModels((url, options) => net.fetch(url, options), accessToken);
 	}
 
-	async sendReachAssistantPrompt(windowId: number | undefined, accountId: string, accessToken: string, request: ReachAssistantRequest, requestId: string, conversationId: string): Promise<ReachAssistantResponse> {
-		const key = JSON.stringify([accountId, conversationId]);
-		if (this.reachAssistantRequests.has(key)) { return { kind: 'busy' }; }
-		const controller = new AbortController();
-		this.reachAssistantRequests.set(key, { windowId, requestId, controller });
-		try {
-			const { net } = await import('electron');
-			return await requestReachAssistant((url, options) => net.fetch(url, options), accountId, accessToken, request, requestId, controller.signal,
-				delta => this.reachAssistantChunks.fire({ requestId, delta }));
-		} finally {
-			this.reachAssistantRequests.delete(key);
-		}
+	accessReachWorkspaceFile(_windowId: number | undefined, root: URI, request: ReachWorkspaceFileRequest) {
+		return accessReachWorkspaceFile(URI.revive(root), request);
 	}
 
-	async stopReachAssistantPrompt(windowId: number | undefined, requestId: string): Promise<void> {
-		for (const request of this.reachAssistantRequests.values()) {
-			if (request.windowId === windowId && request.requestId === requestId) {
-				request.controller.abort();
-				return;
-			}
-		}
+	async sendReachAssistantPrompt(windowId: number | undefined, accountId: string, accessToken: string, request: ReachAssistantRequest, requestId: string, conversationId: string, turnId?: string): Promise<ReachAssistantResponse> {
+		return this.reachAssistantTurns.send(windowId, accountId, accessToken, request, requestId, conversationId, turnId,
+			delta => this.reachAssistantChunks.fire({ requestId, delta }));
+	}
+
+	async finishReachAssistantTurn(windowId: number | undefined, turnId: string): Promise<void> {
+		this.reachAssistantTurns.finish(windowId, turnId);
 	}
 
 	async openExternal(windowId: number | undefined, url: string, defaultApplication?: string): Promise<boolean> {

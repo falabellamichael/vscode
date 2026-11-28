@@ -42,6 +42,7 @@ import { ChatWidgetService } from '../../../../chat/browser/widget/chatWidgetSer
 import { ChatInputPart } from '../../../../chat/browser/widget/input/chatInputPart.js';
 import { IChatService } from '../../../../chat/common/chatService/chatService.js';
 import { ComposerInputSnapshot, IComposerInputSnapshot, IComposerSendAttempt, readNewChatDraftState } from '../../../common/newChatDraftState.js';
+import { SESSION_OUTPUT_OPTIONS, SESSION_OUTPUT_TYPE_STORAGE_KEY, toSessionOutputPromptEntry } from '../../../../chat/browser/widget/input/sessionOutputTypePicker.js';
 import { IChat } from '../../../../../services/sessions/common/session.js';
 import { ITestSessionWithChat } from '../sessionHostTestUtils.js';
 import { ChatSubmitRequestOutcome, IChatSubmitRequestResult } from '../../../../chat/browser/chatSubmitRequestHandlerService.js';
@@ -122,6 +123,7 @@ suite('SharedChatInputComposer', () => {
 		const composer: SharedChatInputComposer = Object.assign(Object.create(SharedChatInputComposer.prototype), {
 			_store: store.add(new DisposableStore()),
 			_widget: widget,
+			_outputType: observableValue('outputType', 'auto'),
 			_sending: observableValue('sending', false),
 			_suppressSendProgress: observableValue('suppressSendProgress', false),
 			_userInteractionSource: store.add(new MutableDisposable()),
@@ -203,6 +205,56 @@ suite('SharedChatInputComposer', () => {
 		assert.deepStrictEqual({ saved, next: readNewChatDraftState(storageService) }, {
 			saved: { inputText: 'saved input', attachments: [attachment], references: undefined, savedDraftId: 'saved-draft' },
 			next: { inputText: 'new input', attachments: [], references: undefined },
+		});
+	});
+
+	test('a selected output type is sent as request context without changing the draft', async () => {
+		const storageService = store.add(new InMemoryStorageService());
+		const { composer, state } = createComposer({ storageService });
+		composer.setOutputType('website');
+		const draft = composer.getDraft();
+
+		const sent = await composer.submit(false);
+		const request = state().requests[0];
+
+		assert.deepStrictEqual({
+			sent,
+			query: request?.query,
+			attachments: request?.attachments,
+			sendContext: draft.sendContext?.map(entry => entry.id),
+			input: state().input,
+			stored: storageService.get(SESSION_OUTPUT_TYPE_STORAGE_KEY, StorageScope.PROFILE),
+			options: SESSION_OUTPUT_OPTIONS.map(option => option.kind),
+		}, {
+			sent: true,
+			query: 'Build it',
+			attachments: ['context', 'session-output:website'],
+			sendContext: ['session-output:website'],
+			input: { text: '', attachments: [], enabled: true },
+			stored: 'website',
+			options: ['auto', 'website', 'mobile', 'design', 'slides', 'animation', 'dataVisualization', 'image', 'document', 'spreadsheet', 'mission'],
+		});
+	});
+
+	test('a draft restores its hidden output context into the picker without showing an attachment', () => {
+		const storageService = store.add(new InMemoryStorageService());
+		const { composer, state } = createComposer({ storageService });
+		const sendContext = [toSessionOutputPromptEntry('slides')!];
+
+		composer.setDraft({ inputText: 'Prepare the launch', attachments: [], sendContext });
+		composer.saveState();
+		const saved = readNewChatDraftState(storageService);
+
+		assert.deepStrictEqual({
+			outputType: composer.outputType,
+			input: state().input,
+			savedSendContext: saved?.sendContext?.map(entry => entry.id),
+			savedAttachments: saved?.attachments,
+		}, {
+			outputType: 'slides',
+			input: { text: 'Prepare the launch', attachments: [], enabled: true },
+			savedSendContext: ['session-output:slides'],
+			savedAttachments: [],
 		});
 	});
 
@@ -538,7 +590,7 @@ suite('SharedChatInputComposer', () => {
 					storageWrites: storageWrites(),
 				}, {
 					sent: sendResult === true,
-					attemptWhenSent: { inputText: 'Build it', attachments: [context], references: undefined },
+					attemptWhenSent: { inputText: 'Build it', attachments: [context] },
 					attemptIdSent: true,
 					attemptAfter: undefined,
 					input: sendResult === true ? '' : 'Build it',
@@ -749,7 +801,7 @@ suite('SharedChatInputComposer', () => {
 					const { composer } = createComposer({ sendResult, disposeDuringSend: true, inputSnapshot: snapshot, onSendRequest: () => { snapshot.set({ inputText: nextViewTyped ? 'typed in the next view' : '', attachments: [] }); } });
 					await composer.submit(false);
 
-					assert.deepStrictEqual(snapshot.get(), { input: nextViewTyped ? { inputText: 'typed in the next view', attachments: [] } : { inputText: 'Build it', attachments: [context], references: undefined } });
+					assert.deepStrictEqual(snapshot.get(), { input: nextViewTyped ? { inputText: 'typed in the next view', attachments: [] } : { inputText: 'Build it', attachments: [context] } });
 				});
 			}
 		}
@@ -1176,7 +1228,7 @@ suite('SharedChatInputComposer', () => {
 			inputEditor: { onDidChangeModelContent: Event.None },
 			attachmentModel: { onDidChange: Event.None },
 			scopedContextKeyService: new MockContextKeyService(),
-			input: { gettingStartedTipContainerElement: dom.$('div'), registerChatPetHorizontalPlatformProvider: () => Disposable.None },
+			input: { gettingStartedTipContainerElement: dom.$('div'), inputToolbarElement: dom.$('div'), registerChatPetHorizontalPlatformProvider: () => Disposable.None },
 			inputPart: {},
 			dispose: () => { },
 		};
@@ -1189,6 +1241,7 @@ suite('SharedChatInputComposer', () => {
 			sessionTypePicker: { onDidChangeChatPetPlatform: Event.None },
 			instantiationService: { createInstance: () => Disposable.None },
 			_scopedInstantiationService: {
+				createInstance: () => ({ element: dom.$('div'), dispose: () => { } }),
 				createChild: () => ({
 					createInstance: (_ctor: unknown, _location: unknown, _viewContext: unknown, options: IChatWidgetViewOptions) => {
 						widgetOptions = options;

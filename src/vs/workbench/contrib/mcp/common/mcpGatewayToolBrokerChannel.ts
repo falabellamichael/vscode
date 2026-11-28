@@ -6,7 +6,7 @@
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { autorun, IReader } from '../../../../base/common/observable.js';
+import { autorun, IObservable, IReader } from '../../../../base/common/observable.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IMcpGatewayServerDescriptor } from '../../../../platform/mcp/common/mcpGateway.js';
@@ -33,6 +33,12 @@ interface IServerIdArg {
 	serverId: string;
 }
 
+export interface IMcpGatewayLocalServer extends IMcpGatewayServerDescriptor {
+	readonly requiresExplicitSelection: true;
+	readonly tools: readonly MCP.Tool[];
+	callTool(name: string, args: Record<string, unknown>, token: CancellationToken): Promise<MCP.CallToolResult>;
+}
+
 export class McpGatewayToolBrokerChannel extends Disposable implements IServerChannel<unknown> {
 	private readonly _onDidChangeTools = this._register(new Emitter<void>());
 	private readonly _onDidChangeResources = this._register(new Emitter<void>());
@@ -54,6 +60,7 @@ export class McpGatewayToolBrokerChannel extends Disposable implements IServerCh
 		private readonly _mcpService: IMcpService,
 		private readonly _logService: ILogService,
 		private readonly _startupGracePeriodMs = 5000,
+		private readonly _localServers?: IObservable<readonly IMcpGatewayLocalServer[]>,
 	) {
 		super();
 		this._logService.debug('[McpGateway][ToolBroker] Initialized');
@@ -63,6 +70,7 @@ export class McpGatewayToolBrokerChannel extends Disposable implements IServerCh
 			for (const server of this._getEnabledServers(reader)) {
 				server.tools.read(reader);
 			}
+			this._localServers?.read(reader);
 
 			if (toolsInitialized) {
 				this._logService.debug('[McpGateway][ToolBroker] Tools changed, firing onDidChangeTools');
@@ -89,10 +97,11 @@ export class McpGatewayToolBrokerChannel extends Disposable implements IServerCh
 		let serversInitialized = false;
 		this._register(autorun(reader => {
 			const servers = this._getEnabledServers(reader);
+			const local = this._localDescriptors(reader);
 
 			if (serversInitialized) {
 				this._logService.debug('[McpGateway][ToolBroker] Servers changed, firing onDidChangeServers');
-				this._onDidChangeServers.fire(servers.map(s => ({ id: s.definition.id, label: s.definition.label })));
+				this._onDidChangeServers.fire([...servers.map(s => ({ id: s.definition.id, label: s.definition.label })), ...local]);
 			} else {
 				serversInitialized = true;
 			}
@@ -101,6 +110,10 @@ export class McpGatewayToolBrokerChannel extends Disposable implements IServerCh
 
 	private _getEnabledServers(reader?: IReader): readonly IMcpServer[] {
 		return this._mcpService.servers.read(reader).filter(server => isContributionEnabled(server.enablement.read(reader)));
+	}
+
+	private _localDescriptors(reader?: IReader): readonly IMcpGatewayServerDescriptor[] {
+		return this._localServers?.read(reader).map(({ id, label, requiresExplicitSelection }) => ({ id, label, requiresExplicitSelection })) ?? [];
 	}
 
 	private _getServerById(serverId: string): IMcpServer | undefined {
@@ -211,11 +224,14 @@ export class McpGatewayToolBrokerChannel extends Disposable implements IServerCh
 		for (const server of servers) {
 			result.push({ id: server.definition.id, label: server.definition.label });
 		}
+		result.push(...this._localDescriptors());
 		this._logService.debug(`[McpGateway][ToolBroker] listServers result: ${result.length} server(s): [${result.map(s => s.label).join(', ')}]`);
 		return result;
 	}
 
 	private async _listToolsForServer(serverId: string): Promise<readonly MCP.Tool[]> {
+		const local = this._localServers?.get().find(server => server.id === serverId);
+		if (local) { return local.tools; }
 		const server = this._getServerById(serverId);
 		if (!server) {
 			this._logService.warn(`[McpGateway][ToolBroker] listToolsForServer: unknown server '${serverId}'`);
@@ -233,7 +249,12 @@ export class McpGatewayToolBrokerChannel extends Disposable implements IServerCh
 	}
 
 	private async _callToolForServer(serverId: string, name: string, args: Record<string, unknown>, chatSessionResource?: string, token: CancellationToken = CancellationToken.None): Promise<MCP.CallToolResult> {
-		this._logService.debug(`[McpGateway][ToolBroker] callToolForServer '${serverId}' tool '${name}' with args: ${JSON.stringify(args)}`);
+		const local = this._localServers?.get().find(server => server.id === serverId);
+		if (local) {
+			if (!chatSessionResource) { throw new Error('A chat-scoped gateway is required for this connection.'); }
+			return local.callTool(name, args, token);
+		}
+		this._logService.debug(`[McpGateway][ToolBroker] callToolForServer '${serverId}' tool '${name}'`);
 
 		const server = this._getServerById(serverId);
 		if (!server) {

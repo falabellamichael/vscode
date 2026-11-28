@@ -465,6 +465,11 @@ configurationRegistry.registerConfiguration({
 				}
 			},
 		},
+		'chat.agentHost.cohere.apiKey': {
+			type: 'string',
+			description: nls.localize('chat.agentHost.cohere.apiKey', "Cohere API key used by the Cohere agent provider (dashboard.cohere.com/api-keys). Forwarded to the agent host process; a restart applies changes made outside Agent Subscriptions."),
+			default: '',
+		},
 		[AgentHostCodexAgentSdkRootSettingId]: {
 			type: 'string',
 			description: nls.localize('chat.agentHost.codexAgent.sdkRoot', "Experimental, for local SDK development only. Absolute path to a directory containing `node_modules/@openai/codex`. When set, the agent host spawns the Codex binary from this tree instead of downloading the SDK. Empty (the default) falls through to the SDK distribution shipped with this build. The agent host process must be restarted for changes to take effect."),

@@ -242,6 +242,8 @@ export interface IToolInvocationContext {
 	 * have its own working directory that differs from the workspace folders.
 	 */
 	readonly workingDirectory?: URI;
+	/** The complete set of directories associated with the calling chat, when supplied by its host. */
+	readonly workingDirectories?: readonly URI[];
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -269,6 +271,7 @@ export interface IToolInvocationPreparationContext {
 	 * Used by tools to resolve relative paths and check file access.
 	 */
 	workingDirectory?: URI;
+	workingDirectories?: readonly URI[];
 }
 
 export type ToolInputOutputBase = {
@@ -732,7 +735,8 @@ export interface ILanguageModelToolsService {
 	 */
 	updateToolStream(toolCallId: string, partialInput: unknown, token: CancellationToken): Promise<void>;
 
-	invokeTool(invocation: IToolInvocation, countTokens: CountTokensCallback, token: CancellationToken): Promise<IToolResult>;
+	/** A host-backed chat can supply its live approval choice for both execution and result sharing. */
+	invokeTool(invocation: IToolInvocation, countTokens: CountTokensCallback, token: CancellationToken, readSessionAutoApprove?: () => boolean): Promise<IToolResult>;
 	cancelToolCallsForRequest(requestId: string): void;
 	/** Flush any pending tool updates to the extension hosts. */
 	flushToolUpdates(): void;

@@ -10,7 +10,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { observableValue } from '../../../../base/common/observable.js';
 import { URI } from '../../../../base/common/uri.js';
-import { mock } from '../../../../base/test/common/mock.js';
+import { mock, upcastPartial } from '../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../platform/configuration/test/common/testConfigurationService.js';
@@ -33,7 +33,7 @@ import { MCP } from '../../../contrib/mcp/common/modelContextProtocol.js';
 import { IAuthenticationMcpAccessService } from '../../../services/authentication/browser/authenticationMcpAccessService.js';
 import { IAuthenticationMcpService } from '../../../services/authentication/browser/authenticationMcpService.js';
 import { IAuthenticationMcpUsageService } from '../../../services/authentication/browser/authenticationMcpUsageService.js';
-import { AuthenticationSession, AuthenticationSessionsChangeEvent, getDynamicAuthenticationProviderId, IAuthenticationGetSessionsOptions, IAuthenticationProvider, IAuthenticationService, IAuthenticationWwwAuthenticateRequest } from '../../../services/authentication/common/authentication.js';
+import { AuthenticationSession, AuthenticationSessionsChangeEvent, getDynamicAuthenticationProviderId, getOAuthTokenFingerprint, IAuthenticationGetSessionsOptions, IAuthenticationProvider, IAuthenticationService, IAuthenticationWwwAuthenticateRequest, MCP_REFRESH_REJECTED_OAUTH_TOKEN, MCP_USE_HTTPS_OAUTH_CALLBACK } from '../../../services/authentication/common/authentication.js';
 import { IDynamicAuthenticationProviderStorageService } from '../../../services/authentication/common/dynamicAuthenticationProviderStorage.js';
 import { IExtensionService } from '../../../services/extensions/common/extensions.js';
 import { TestExtensionService } from '../../../test/common/workbenchTestServices.js';
@@ -511,6 +511,192 @@ suite('MainThreadMcp - re-validation', () => {
 suite('MainThreadMcp - explicit OAuth clients', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('recovers and upgrades the correct OAuth account while keeping other grants', async () => {
+		const issuer = URI.parse('https://auth.example');
+		const uri = URI.parse('https://mcp.example/mcp');
+		const resource = { resource: uri.toString(true) };
+		const providerId = getDynamicAuthenticationProviderId(issuer, resource);
+		const account = { id: 'support', label: 'Support workspace' };
+		const rejected: AuthenticationSession = { id: 'old-session', accessToken: 'old-token', account, scopes: ['read'] };
+		const other: AuthenticationSession = { id: 'other-session', accessToken: 'other-token', account: { id: 'engineering', label: 'Engineering workspace' }, scopes: ['read'] };
+		const renewed: AuthenticationSession = { ...rejected, id: 'renewed-session', accessToken: 'renewed-token' };
+		const upgraded: AuthenticationSession = { ...renewed, id: 'upgraded-session', accessToken: 'upgraded-token', scopes: ['read', 'write'] };
+		const otherUpgraded: AuthenticationSession = { ...other, id: 'other-upgraded', accessToken: 'other-write-token', scopes: ['read', 'write'] };
+		const sessions = [rejected, other, otherUpgraded];
+		const removed: string[] = [];
+		const refreshed: AuthenticationSession = { ...renewed, id: 'refreshed-session', accessToken: 'refreshed-token' };
+		let allowRefresh = false;
+		let allowSupportAccess = true;
+		let successfulRefreshes = 0;
+		let signIns = 0;
+		let prompts = 0;
+		let allow = false;
+		let switchAccounts = false;
+		let delegate: IMcpHostDelegate | undefined;
+		const registry = new class extends mock<IMcpRegistry>() {
+			override readonly collections = observableValue<readonly McpCollectionDefinition[]>('collections', []);
+			override registerDelegate(value: IMcpHostDelegate) { delegate = value; return { dispose() { } }; }
+		};
+		const provider = new class extends mock<IAuthenticationProvider>() {
+			override readonly id = providerId;
+			override readonly label = 'Fixture provider';
+			override readonly supportsMultipleAccounts = false;
+		};
+		const mainThread = createMainThreadMcp(disposables, { $onDidChangeMcpServerDefinitions() { }, $startMcp() { } }, registry, services => {
+			services.stub(IAuthenticationService, {
+				onDidChangeSessions: Event.None,
+				getOrActivateProviderIdForServer: async () => providerId,
+				isDynamicAuthenticationProvider: id => id === providerId,
+				getProvider: () => provider,
+				getSessions: async (id, scopes, options) => {
+					if (options?.[MCP_REFRESH_REJECTED_OAUTH_TOKEN] && allowRefresh) {
+						assert.strictEqual(id, providerId);
+						assert.strictEqual(options.silent, true);
+						assert.strictEqual(options[MCP_REFRESH_REJECTED_OAUTH_TOKEN], await getOAuthTokenFingerprint(renewed.accessToken));
+						successfulRefreshes++;
+						sessions.splice(sessions.indexOf(renewed), 1, refreshed);
+						return [refreshed];
+					}
+					return sessions.filter(session => JSON.stringify(session.scopes) === JSON.stringify(scopes));
+				},
+				unregisterAuthenticationProvider: () => assert.fail('Recovery must keep the registration'),
+				createDynamicAuthenticationProvider: async () => assert.fail('Recovery must reuse the existing provider'),
+				createSession: async (id, scopes, options) => {
+					assert.deepStrictEqual([id, options?.account], [providerId, account]);
+					signIns++;
+					if (JSON.stringify(scopes) === JSON.stringify(upgraded.scopes)) {
+						if (switchAccounts) { return otherUpgraded; }
+						sessions.push(upgraded);
+						return upgraded;
+					}
+					assert.deepStrictEqual(scopes, ['read']);
+					sessions.push(renewed);
+					return renewed;
+				},
+				removeSession: async (id, sessionId) => {
+					assert.strictEqual(id, providerId);
+					assert.strictEqual(sessionId, rejected.id);
+					removed.push(sessionId);
+					sessions.splice(sessions.indexOf(rejected), 1);
+				},
+			});
+			services.stub(IDialogService, { prompt: async () => { prompts++; return { result: (allow || undefined) as never }; } });
+			services.stub(IAuthenticationMcpService, {
+				getAccountPreference: definitionId => definitionId === 'support' ? account.label : other.account.label,
+				updateAccountPreference() { },
+			});
+			services.stub(IAuthenticationMcpAccessService, { isAccessAllowedForUrl: (_provider, _account, serverId) => serverId !== 'support' || allowSupportAccess, updateAllowedMcpServers() { } });
+			services.stub(IAuthenticationMcpUsageService, { addAccountUsage() { } });
+		});
+		const launch: McpServerLaunch = { type: McpServerTransportType.HTTP, uri, headers: [] };
+		const definitions: McpServerDefinition[] = ['support', 'engineering'].map(name => ({ id: name, label: name, launch, cacheNonce: 'fixture' }));
+		const collection: McpCollectionDefinition = {
+			id: 'fixtures', label: 'Fixtures', remoteAuthority: null, serverDefinitions: observableValue<readonly McpServerDefinition[]>('definitions', definitions),
+			trustBehavior: McpServerTrust.Kind.Trusted, scope: StorageScope.PROFILE,
+			configTarget: ConfigurationTarget.USER_LOCAL, order: McpCollectionSortOrder.Extension,
+		};
+		assert.ok(delegate);
+		for (const definition of definitions) { delegate.start(collection, definition, launch, {}); }
+		const details: IMcpAuthenticationDetails = {
+			authorizationServer: issuer, authorizationServerMetadata: { issuer: issuer.toString(true), response_types_supported: ['code'] },
+			resourceMetadata: resource, scopes: ['read'],
+		};
+		const recovery = { rejectedTokenFingerprint: await getOAuthTokenFingerprint(rejected.accessToken) };
+		assert.deepStrictEqual(await mainThread.$getTokenFromServerMetadata(1, details), { accessToken: rejected.accessToken, scopes: ['read'] });
+		await assert.rejects(mainThread.$getTokenFromServerMetadata(1, details, { ...recovery, errorOnUserInteraction: true }), /User interaction required: authentication/);
+		assert.strictEqual(prompts, 0);
+		await assert.rejects(mainThread.$getTokenFromServerMetadata(1, details, recovery), isCancellationError);
+		assert.deepStrictEqual(sessions, [rejected, other, otherUpgraded]);
+		allow = true;
+		assert.deepStrictEqual(await Promise.all([
+			mainThread.$getTokenFromServerMetadata(1, details, recovery),
+			mainThread.$getTokenFromServerMetadata(1, details, recovery),
+		]), [renewed, renewed].map(({ accessToken, scopes }) => ({ accessToken, scopes })));
+		assert.deepStrictEqual({ prompts, signIns, removed, other: await mainThread.$getTokenFromServerMetadata(2, details) }, {
+			prompts: 2, signIns: 1, removed: [rejected.id], other: { accessToken: other.accessToken, scopes: ['read'] },
+		});
+		const expandedDetails = { ...details, scopes: [...upgraded.scopes] };
+		const upgrade = { scopeUpgradeFrom: { scopes: [...renewed.scopes], tokenFingerprint: await getOAuthTokenFingerprint(renewed.accessToken) } };
+		await assert.rejects(mainThread.$getTokenFromServerMetadata(1, expandedDetails, { ...upgrade, errorOnUserInteraction: true }), /User interaction required: authentication/);
+		assert.strictEqual(prompts, 2);
+		switchAccounts = true;
+		await assert.rejects(mainThread.$getTokenFromServerMetadata(1, expandedDetails, upgrade), /User interaction required: authentication/);
+		assert.deepStrictEqual(await mainThread.$getTokenFromServerMetadata(1, details), { accessToken: renewed.accessToken, scopes: ['read'] });
+		switchAccounts = false;
+		assert.deepStrictEqual(await Promise.all([
+			mainThread.$getTokenFromServerMetadata(1, expandedDetails, upgrade),
+			mainThread.$getTokenFromServerMetadata(1, expandedDetails, upgrade),
+		]), [upgraded, upgraded].map(({ accessToken, scopes }) => ({ accessToken, scopes })));
+		assert.deepStrictEqual({ prompts, signIns, removed, other: await mainThread.$getTokenFromServerMetadata(2, details) }, {
+			prompts: 4, signIns: 3, removed: [rejected.id], other: { accessToken: other.accessToken, scopes: ['read'] },
+		});
+
+		allowRefresh = true;
+		const earlyRejection = { rejectedTokenFingerprint: await getOAuthTokenFingerprint(renewed.accessToken), errorOnUserInteraction: true };
+		allowSupportAccess = false;
+		await assert.rejects(mainThread.$getTokenFromServerMetadata(1, details, earlyRejection), /User interaction required: authentication/);
+		assert.strictEqual(successfulRefreshes, 0);
+		allowSupportAccess = true;
+		assert.deepStrictEqual(await Promise.all([
+			mainThread.$getTokenFromServerMetadata(1, details, earlyRejection),
+			mainThread.$getTokenFromServerMetadata(1, details, earlyRejection),
+		]), [refreshed, refreshed].map(({ accessToken, scopes }) => ({ accessToken, scopes })));
+		assert.deepStrictEqual({ successfulRefreshes, prompts, signIns, removed }, { successfulRefreshes: 1, prompts: 4, signIns: 3, removed: [rejected.id] });
+	});
+
+	test('routes an explicit HTTPS callback to the registered MCP client and its browser flow', async () => {
+		const issuer = URI.parse('https://issuer.example.com');
+		const uri = URI.parse('https://service.example.com/mcp');
+		const resource = { resource: uri.toString(true) };
+		const providerId = getDynamicAuthenticationProviderId(issuer, resource, 'registered-client');
+		const launch: McpServerLaunch = { type: McpServerTransportType.HTTP, uri, headers: [], oauth: { useHttpsCallback: true } };
+		let delegate: IMcpHostDelegate | undefined;
+		const registry = new class extends mock<IMcpRegistry>() {
+			override readonly collections = observableValue<readonly McpCollectionDefinition[]>('collections', []);
+			override registerDelegate(value: IMcpHostDelegate) { delegate = value; return { dispose() { } }; }
+		};
+		const mainThread = createMainThreadMcp(disposables, { $onDidChangeMcpServerDefinitions() { }, $startMcp() { } }, registry, services => {
+			services.stub(IAuthenticationService, {
+				onDidChangeSessions: Event.None,
+				getOrActivateProviderIdForServer: async () => assert.fail('A shared provider cannot choose the registered callback'),
+				isDynamicAuthenticationProvider: () => false,
+				isAuthenticationProviderRegistered: () => false,
+				createDynamicAuthenticationProvider: async (_server, _metadata, _resource, clientId, _secret, id) => {
+					assert.deepStrictEqual([clientId, id], ['registered-client', providerId]);
+					return upcastPartial<IAuthenticationProvider>({ id: providerId, label: 'Registered client' });
+				},
+				getProvider: () => upcastPartial<IAuthenticationProvider>({ id: providerId, label: 'Registered client', supportsMultipleAccounts: true }),
+				getSessions: async () => [],
+				createSession: async (id, scopes, options) => {
+					assert.strictEqual(id, providerId);
+					assert.strictEqual(options?.[MCP_USE_HTTPS_OAUTH_CALLBACK], true);
+					assert.deepStrictEqual(scopes, ['read']);
+					return { id: 'fixture-session', accessToken: 'fixture-token', account: { id: 'account', label: 'Account' }, scopes: ['read'] };
+				},
+			});
+			services.stub(IDynamicAuthenticationProviderStorageService, { getClientRegistration: async () => undefined });
+			services.stub(IDialogService, { prompt: async () => ({ result: true as never }) });
+			services.stub(IAuthenticationMcpService, { getAccountPreference: () => undefined, updateAccountPreference() { } });
+			services.stub(IAuthenticationMcpAccessService, { updateAllowedMcpServers() { } });
+			services.stub(IAuthenticationMcpUsageService, { addAccountUsage() { } });
+		});
+		const definition: McpServerDefinition = { id: 'https', label: 'HTTPS fixture', launch, cacheNonce: 'fixture' };
+		const collection: McpCollectionDefinition = {
+			id: 'fixtures', label: 'Fixtures', remoteAuthority: null,
+			serverDefinitions: observableValue<readonly McpServerDefinition[]>('definitions', [definition]),
+			trustBehavior: McpServerTrust.Kind.Trusted, scope: StorageScope.PROFILE,
+			configTarget: ConfigurationTarget.USER_LOCAL, order: McpCollectionSortOrder.Extension,
+		};
+		assert.ok(delegate);
+		delegate.start(collection, definition, launch, {});
+		const details: IMcpAuthenticationDetails = {
+			authorizationServer: issuer, resourceMetadata: resource, scopes: ['read'],
+			authorizationServerMetadata: { issuer: issuer.toString(true), response_types_supported: ['code'] },
+		};
+		await assert.rejects(mainThread.$getTokenFromServerMetadata(1, details), /requires a registered client ID/);
+		assert.deepStrictEqual(await mainThread.$getTokenFromServerMetadata(1, { ...details, clientId: 'registered-client' }), { accessToken: 'fixture-token', scopes: ['read'] });
+	});
+
 	test('prompts once for a missing Google Workspace client secret only on an interactive connection', async () => {
 		const authorizationServer = URI.parse('https://accounts.google.com');
 		const uri = URI.parse('https://gmailmcp.googleapis.com/mcp/v1');
@@ -635,11 +821,11 @@ suite('MainThreadMcp - explicit OAuth clients', () => {
 		};
 		assert.ok(delegate);
 		for (const definition of definitions) { delegate.start(collection, definition, launch, {}); }
-		const getToken = (id: number, clientId: string) => mainThread.$getTokenFromServerMetadata(id, {
+		const getToken = async (id: number, clientId: string) => (await mainThread.$getTokenFromServerMetadata(id, {
 			authorizationServer: authority,
 			authorizationServerMetadata: { issuer: authority.toString(true), response_types_supported: ['code'] },
 			resourceMetadata: resource, scopes: ['read'], clientId,
-		});
+		}))?.accessToken;
 		assert.strictEqual(await getToken(1, 'support'), 'support-session');
 		assert.deepStrictEqual(await Promise.all([getToken(2, 'engineering'), getToken(3, 'engineering')]), ['engineering-session-1', 'engineering-session-1']);
 		assert.deepStrictEqual(created, [{ id: secondId, clientId: 'engineering', clientSecret: undefined }]);

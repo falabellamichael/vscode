@@ -14,6 +14,7 @@ import { readAgentModelNoticesMeta } from '../../../../../../platform/agentHost/
 import { isCopilotHydraFusionModelId } from '../../../../../../platform/agentHost/common/copilotCliConfig.js';
 import { COPILOT_CLI_AGENT_PROVIDER_ID } from '../../../../../../platform/agentHost/common/agent.js';
 import { CLOUD_SANDBOX_AGENT_PROVIDER } from '../../../../../../platform/agentHost/common/cloudSandboxAgentHost.js';
+import { COHERE_CHAT_PROVIDER_ID, REACH_CHAT_PROVIDER_ID } from '../../../../../../platform/native/common/native.js';
 import { LOCAL_MODEL_SENTINEL_PROVIDER_NAME } from '../../../../../../platform/agentHost/common/localModel.js';
 import { readLocalModelRowMeta } from '../../../../../../platform/agentHost/common/meta/localModelStatus.js';
 import { ConfigPropertySchema, ConfigSchema, SessionModelInfo } from '../../../../../../platform/agentHost/common/state/sessionState.js';
@@ -31,10 +32,7 @@ import { AUTO_RAW_MODEL_ID, COPILOT_VENDOR_ID, ILanguageModelChatMetadata, ILang
  * Returns whether an agent host provider exposes a synthetic "Auto" model to
  * fall back to.
  *
- * Today only the Copilot CLI harness exposes an Auto selection and can run
- * without an explicit model, so it shows "Auto" rather than a "No models
- * available" state when no models are listed. Other harnesses (Claude,
- * Codex, …) require an explicit model.
+ * Copilot CLI, REACH and Cohere can resolve a model when none is selected.
  *
  * `provider` is the underlying agent provider id (e.g. `'copilotcli'`,
  * `'claude'`, `'codex'`), not the `agent-host-<provider>` session type.
@@ -44,7 +42,7 @@ import { AUTO_RAW_MODEL_ID, COPILOT_VENDOR_ID, ILanguageModelChatMetadata, ILang
  * agent declares its own value instead of this allow-list living in core.
  */
 export function agentHostProviderSupportsAutoModel(provider: string): boolean {
-	return provider === 'copilotcli';
+	return provider === 'copilotcli' || provider === REACH_CHAT_PROVIDER_ID || provider === COHERE_CHAT_PROVIDER_ID;
 }
 
 /**
@@ -481,6 +479,9 @@ export class AgentHostLanguageModelProvider extends Disposable implements ILangu
 	 * registry — no name mapping lives here.
 	 */
 	private _modelGroupFor(model: SessionModelInfo): ILanguageModelChatMetadata['modelGroup'] {
+		if (model.provider === REACH_CHAT_PROVIDER_ID) {
+			return { id: this._vendor };
+		}
 		const explicitGroupId = readAgentModelGroupId(model);
 		const slash = model.id.indexOf('/');
 		// An on-device model's direct row is the harness's own model; its id's

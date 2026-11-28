@@ -756,6 +756,37 @@ suite('ChatAttachmentsContentPart', () => {
 			});
 		});
 
+		for (const vendor of ['agent-host-reach', 'agent-host-cohere']) {
+			test(vendor + ' Auto respects catalog vision support in drafts and transcripts', () => {
+				const identifier = vendor + ':auto';
+				const image = createImageEntry('image.png', new Uint8Array([1, 2, 3]));
+				const labels = disposables.add(instantiationService.createInstance(ResourceLabels, DEFAULT_LABELS_CONTAINER));
+				for (const vision of [false, true]) {
+					setModels([{ identifier, id: 'auto', vendor, vision }]);
+					const metadata = instantiationService.get(ILanguageModelsService).lookupLanguageModel(identifier)!;
+					const draft = disposables.add(instantiationService.createInstance(ImageAttachmentWidget, undefined, image, { identifier, metadata },
+						{ shouldFocusClearButton: false, supportsDeletion: true, isCurrentInput: true }, dom.$('div'), labels));
+					const sent = disposables.add(instantiationService.createInstance(ChatAttachmentsContentPart, { variables: [image], sessionResource: undefined, modelId: identifier }));
+					const elements = [draft.element, sent.domNode!.querySelector<HTMLElement>('.image-attachment')!];
+					assert.deepStrictEqual(elements.map(element => [element.classList.contains('warning'), element.ariaLabel?.includes('does not support images')]), [[!vision, !vision], [!vision, !vision]]);
+				}
+				assert.strictEqual(image.omittedState, undefined);
+			});
+		}
+
+		test('switching a pasted draft to a vision model clears stale omission without changing sent history', () => {
+			const vendor = 'agent-host-cohere';
+			const identifier = vendor + ':command-a-vision';
+			setModels([{ identifier, id: 'command-a-vision', vendor, vision: true }]);
+			const model = { identifier, metadata: instantiationService.get(ILanguageModelsService).lookupLanguageModel(identifier)! };
+			const image = { ...createImageEntry('pasted.png', new Uint8Array([1, 2, 3])), kind: 'image' as const, isPasted: true, omittedState: OmittedState.Full };
+			const labels = disposables.add(instantiationService.createInstance(ResourceLabels, DEFAULT_LABELS_CONTAINER));
+			const draft = disposables.add(instantiationService.createInstance(ImageAttachmentWidget, undefined, image, model,
+				{ shouldFocusClearButton: false, supportsDeletion: true, isCurrentInput: true }, dom.$('div'), labels));
+			const sent = disposables.add(instantiationService.createInstance(ChatAttachmentsContentPart, { variables: [image], sessionResource: undefined, modelId: identifier }));
+			assert.deepStrictEqual([draft.element.classList.contains('warning'), sent.domNode?.querySelector('.image-attachment')?.classList.contains('warning'), image.omittedState], [false, true, OmittedState.Full]);
+		});
+
 		test('should not show a stale omission for Copilot Fusion when editing', () => {
 			const fusionModel = {
 				identifier: 'agent-host-copilotcli/auto',

@@ -23,6 +23,7 @@ suite('New chat draft state', () => {
 		const input = {
 			inputText: '#attachment:a.ts',
 			attachments: [{ kind: 'file' as const, id: 'a', name: 'a.ts', value: file }],
+			sendContext: [{ kind: 'promptText' as const, id: 'session-output:website', name: 'Requested output', value: 'Build a website.', modelDescription: 'Requested deliverable', automaticallyAdded: true }],
 			references: [{ id: 'a', range: new Range(1, 1, 1, 17), data: file, isFile: true }],
 		};
 		const first = drafts.save(input, { folderUri: URI.file('/workspace'), providerId: 'host', sessionTypeId: 'agent', configuration: { modelId: 'model', sessionTemplate: { config: { mode: 'interactive' } }, branch: 'topic' } });
@@ -34,14 +35,16 @@ suite('New chat draft state', () => {
 			ids: reloaded.drafts.get().map(draft => draft.id).sort(),
 			file: restored.input.attachments[0].value,
 			reference: restored.input.references?.[0].data,
+			sendContext: restored.input.sendContext?.map(entry => entry.id),
 			target: restored.target,
-			content: [hasSessionDraftContent(second.input), hasSessionDraftContent({ inputText: ' \n ', attachments: [] })],
+			content: [hasSessionDraftContent(second.input), hasSessionDraftContent({ inputText: ' \n ', attachments: [] }), hasSessionDraftContent({ inputText: '', attachments: [], sendContext: input.sendContext })],
 		}, {
 			ids: [first.id, second.id].sort(),
 			file,
 			reference: file,
+			sendContext: ['session-output:website'],
 			target: first.target,
-			content: [true, false],
+			content: [true, false, false],
 		});
 	});
 

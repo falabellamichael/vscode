@@ -13,7 +13,7 @@ import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/w
 import { workbenchConfigurationNodeBase } from '../../../common/configuration.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { EditorInputWithOptions } from '../../../common/editor.js';
-import { ASSISTANT_WEATHER_LOCATION_SETTING } from '../../sessions/common/sessionConfig.js';
+import { ASSISTANT_MAIL_WATCH_SETTING, ASSISTANT_WEATHER_LOCATION_SETTING } from '../../sessions/common/sessionConfig.js';
 import { RegisteredEditorPriority, IEditorResolverService } from '../../../services/editor/common/editorResolverService.js';
 import { ITextEditorService } from '../../../services/textfile/common/textEditorService.js';
 import { DEFAULT_SETTINGS_EDITOR_SETTING, FOLDER_SETTINGS_PATH, IPreferencesService, ISettingsEditorOptions, USE_SPLIT_JSON_SETTING } from '../../../services/preferences/common/preferences.js';
@@ -120,7 +120,13 @@ registry.registerConfiguration({
 			type: 'string',
 			default: '',
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: nls.localize('sessions.assistant.weatherLocation', "The default city for The Weather Network forecasts and Assistant briefings. Use `Vancouver, BC, CA` or `Paris, FR`. You can also ask Assistant to change this setting. Run `/weather` in Assistant to manage the Pelmorex API key."),
+			markdownDescription: nls.localize('sessions.assistant.weatherLocation', "The default city for Assistant weather forecasts and briefings. Use `Vancouver, BC, CA` or `Paris, FR`. You can also ask Assistant to change this setting. Forecasts use The Weather Network when a Pelmorex API key is configured (run `/weather` in Assistant to manage it) and fall back to the public Open-Meteo service otherwise."),
+		},
+		[ASSISTANT_MAIL_WATCH_SETTING]: {
+			type: 'boolean',
+			default: true,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: nls.localize('sessions.assistant.mailWatch', "Passively watch connected mailboxes (Outlook, Gmail) for new unread **Important** emails while Agents is open, and report them quietly with a status-bar badge (no toasts). Only already-connected mailboxes are read — the watcher never starts servers or sign-in flows. Run `/watch` in Assistant for status, or ask Assistant to check, enable, or disable it."),
 		},
 	},
 });

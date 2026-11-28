@@ -24,8 +24,8 @@ import { defaultUserDataProfileIcon, IProfileTemplateInfo, IUserDataProfileManag
 import { Orientation, Sizing, SplitView } from '../../../../base/browser/ui/splitview/splitview.js';
 import { Button, ButtonBar, ButtonWithDropdown } from '../../../../base/browser/ui/button/button.js';
 import { defaultButtonStyles, defaultCheckboxStyles, defaultInputBoxStyles, defaultSelectBoxStyles, getInputBoxStyle, getListStyles } from '../../../../platform/theme/browser/defaultStyles.js';
-import { editorBackground, foreground, registerColor } from '../../../../platform/theme/common/colorRegistry.js';
-import { PANEL_BORDER } from '../../../common/theme.js';
+import { foreground, registerColor } from '../../../../platform/theme/common/colorRegistry.js';
+import { PANEL_BACKGROUND, PANEL_BORDER } from '../../../common/theme.js';
 import { WorkbenchAsyncDataTree, WorkbenchList, WorkbenchTable } from '../../../../platform/list/browser/listService.js';
 import { CachedListVirtualDelegate, IListRenderer, IListVirtualDelegate } from '../../../../base/browser/ui/list/list.js';
 import { IAsyncDataSource, ITreeNode, ITreeRenderer } from '../../../../base/browser/ui/tree/tree.js';
@@ -77,23 +77,24 @@ const removeIcon = registerIcon('profiles-editor-remove-folder', Codicon.close, 
 export const profilesSashBorder = registerColor('profiles.sashBorder', PANEL_BORDER, localize('profilesSashBorder', "The color of the Profiles editor splitview sash border."));
 
 const listStyles = getListStyles({
-	listActiveSelectionBackground: editorBackground,
+	listBackground: PANEL_BACKGROUND,
+	listActiveSelectionBackground: PANEL_BACKGROUND,
 	listActiveSelectionForeground: foreground,
-	listFocusAndSelectionBackground: editorBackground,
+	listFocusAndSelectionBackground: PANEL_BACKGROUND,
 	listFocusAndSelectionForeground: foreground,
-	listFocusBackground: editorBackground,
+	listFocusBackground: PANEL_BACKGROUND,
 	listFocusForeground: foreground,
 	listHoverForeground: foreground,
-	listHoverBackground: editorBackground,
-	listHoverOutline: editorBackground,
-	listFocusOutline: editorBackground,
-	listInactiveSelectionBackground: editorBackground,
+	listHoverBackground: PANEL_BACKGROUND,
+	listHoverOutline: PANEL_BACKGROUND,
+	listFocusOutline: PANEL_BACKGROUND,
+	listInactiveSelectionBackground: PANEL_BACKGROUND,
 	listInactiveSelectionForeground: foreground,
-	listInactiveFocusBackground: editorBackground,
-	listInactiveFocusOutline: editorBackground,
+	listInactiveFocusBackground: PANEL_BACKGROUND,
+	listInactiveFocusOutline: PANEL_BACKGROUND,
 	treeIndentGuidesStroke: undefined,
 	treeInactiveIndentGuidesStroke: undefined,
-	tableOddRowsBackgroundColor: editorBackground,
+	tableOddRowsBackgroundColor: PANEL_BACKGROUND,
 });
 
 export class UserDataProfilesEditor extends EditorPane implements IUserDataProfilesEditor {
@@ -205,6 +206,9 @@ export class UserDataProfilesEditor extends EditorPane implements IUserDataProfi
 					}
 				},
 				openOnSingleClick: true,
+				overrideStyles: {
+					listBackground: PANEL_BACKGROUND
+				},
 				identityProvider: {
 					getId(e) {
 						if (e instanceof UserDataProfileElement) {

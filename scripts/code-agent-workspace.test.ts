@@ -9,7 +9,26 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
-const { createLaunchOptions } = require('./code-agent-workspace.ts');
+const { createLaunchOptions, createPrimaryLaunchOptions } = require('./code-agent-workspace.ts');
+
+test('routes browser callbacks to the normal Signal-C profile and runtime', () => {
+	const root = path.resolve('fork with spaces');
+	const appData = path.resolve('user data');
+	const inherited = { APPDATA: appData, VSCODE_PORTABLE: 'another-build', VSCODE_IPC_HOOK_CLI: 'another-editor' };
+	const normal = createPrimaryLaunchOptions(root, undefined, false, inherited);
+	const uri = 'signal-c://dynamicauthprovider/accounts.google.com/redirect?nonce=fixture&windowId=1';
+	const callback = createPrimaryLaunchOptions(root, undefined, false, inherited, uri);
+	assert.strictEqual(normal.profile, path.join(appData, 'Signal-C'));
+	assert.strictEqual(callback.executable, normal.executable);
+	assert.deepStrictEqual(callback.environment, normal.environment);
+	assert.strictEqual(callback.environment.VSCODE_DEV, '1');
+	assert.strictEqual(callback.environment.VSCODE_SIGNAL_C_PRIMARY, '1');
+	assert.strictEqual(callback.environment.VSCODE_PORTABLE, undefined);
+	assert.deepStrictEqual(callback.args, [...normal.args.slice(0, -1), '--open-url', '--', uri]);
+	for (const invalid of ['', 'https://example.test', 'signal-c://test/" --flag', 'signal-c://test/\n']) {
+		assert.throws(() => createPrimaryLaunchOptions(root, undefined, false, inherited, invalid), /Invalid Signal-C callback/);
+	}
+});
 
 test('isolates editor IPC and agent homes without mutating the launching environment', () => {
 	const inherited = { PATH: 'keep-path', SystemRoot: 'keep-system-root', VSCODE_IPC_HOOK_CLI: 'other-editor', vscode_portable: 'other-profile', ELECTRON_RUN_AS_NODE: '1', codex_home: 'other-codex', claude_config_dir: 'other-claude' };

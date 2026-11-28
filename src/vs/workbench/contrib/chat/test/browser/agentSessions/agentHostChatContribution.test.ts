@@ -108,6 +108,7 @@ import { sessionReducer, chatReducer } from '../../../../../../platform/agentHos
 import { IDefaultAccountService } from '../../../../../../platform/defaultAccount/common/defaultAccount.js';
 import { CommandsRegistry, ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import { AGENT_HOST_DISABLE_HOOK_WARNINGS_COMMAND_ID } from '../../../browser/agentSessions/agentHost/agentHostHookWarnings.js';
+import { REACH_ACCOUNT_ORIGIN, REACH_CHAT_PROVIDER_ID } from '../../../../../../platform/native/common/native.js';
 import { INotificationService, NoOpNotification, Severity } from '../../../../../../platform/notification/common/notification.js';
 import { IAccessibilityService } from '../../../../../../platform/accessibility/common/accessibility.js';
 import { TestAccessibilityService } from '../../../../../../platform/accessibility/test/common/testAccessibilityService.js';
@@ -1712,6 +1713,30 @@ suite('AgentHostChatContribution', () => {
 	// ---- Registration ---------------------------------------------------
 
 	suite('registration', () => {
+		test('REACH registers an IDE chat before sign-in and requests only its local account on first send', async () => {
+			for (const remoteAuthority of [undefined, 'ssh-remote+example']) {
+				const { instantiationService, agentHostService, chatSessionContributions, chatAgentService, commandService } = createTestServices(disposables);
+				instantiationService.stub(IWorkbenchEnvironmentService, { isSessionsWindow: false, remoteAuthority });
+				agentHostService.setRootState({ agents: [{ provider: REACH_CHAT_PROVIDER_ID, displayName: 'REACH', description: '', models: [], protectedResources: [{ resource: REACH_ACCOUNT_ORIGIN, required: true }] }], activeSessions: 0 });
+				disposables.add(instantiationService.createInstance(AgentHostContribution));
+				const type = 'agent-host-reach';
+				const registration = chatSessionContributions.find(c => c.type === type);
+				if (isWeb || remoteAuthority) {
+					assert.strictEqual(registration, undefined);
+					continue;
+				}
+				assert.strictEqual(registration?.displayName, 'REACH');
+				assert.strictEqual(registration.supportsAutoModel, true);
+				assert.strictEqual(registration.capabilities?.supportsImageAttachments, true);
+				assert.strictEqual(typeof registration.requiresCopilotSignIn === 'function' ? registration.requiresCopilotSignIn() : registration.requiresCopilotSignIn, false);
+				const participant = chatAgentService.registeredAgents.get(type);
+				assert.ok(participant);
+				commandService.result = false;
+				await assert.rejects(participant.impl.invoke(makeRequest({ agentId: type, sessionResource: URI.parse('agent-host-reach:/untitled-reach') }), () => { }, [], CancellationToken.None), /Authentication is required/);
+				assert.deepStrictEqual(commandService.calls, [{ commandId: 'workbench.action.chat.connectReach', args: [] }]);
+				assert.strictEqual(agentHostService.createSessionCalls.length, 0);
+			}
+		});
 
 		test('registers Devin MCP compatibility only for the local desktop gateway', () => {
 			const results = [];

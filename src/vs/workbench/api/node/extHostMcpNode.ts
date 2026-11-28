@@ -59,12 +59,12 @@ export class NodeExtHostMpcService extends ExtHostMcpService {
 		return Object.fromEntries(values.map(value => [value, resolve(value)]));
 	}
 
-	override $sendMessage(id: number, message: string): void {
+	override $sendMessage(id: number, message: string, errorOnUserInteraction?: boolean): void {
 		const nodeServer = this.nodeServers.get(id);
 		if (nodeServer) {
 			nodeServer.write(message);
 		} else {
-			super.$sendMessage(id, message);
+			super.$sendMessage(id, message, errorOnUserInteraction);
 		}
 	}
 

@@ -820,6 +820,9 @@ export class TabbedModelPicker extends Disposable {
 	}
 
 	private _destinationForSelectedModel(destinations: readonly IModelPickerDestination[], context: ITabbedModelPickerContext): string | undefined {
+		if (!context.selectedModelId) {
+			return undefined;
+		}
 		if (context.selectedModelId === this._autoModel(context)?.identifier || this._hydraFusionModels(context).some(model => model.identifier === context.selectedModelId)) {
 			return MODEL_PICKER_BUILT_IN_DESTINATION;
 		}

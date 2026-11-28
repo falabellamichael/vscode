@@ -3477,29 +3477,36 @@ suite('AICustomizationDiscoveryPage', () => {
 		}
 	});
 
-	test('connects Outlook mail straight from the built-in Browse card', async () => {
-		const browseSections = new DeferredPromise<ICustomizationMarketplaceBrowseSections>();
-		const nativeSource = signalCAppConnectionSource.id;
-		const app = resource('outlook-direct', { sourceId: nativeSource, displayName: 'Outlook / Microsoft 365 Mail' });
-		const fixture = createPage(
-			['agentFinder', nativeSource],
-			[AICustomizationManagementSection.McpServers], [], undefined, [], browseSections.p,
-			{ [nativeSource]: [app] },
-		);
-		fixture.page.setVisible(true);
-		try {
-			await timeout(0);
-			assert.match(fixture.container.querySelector('.customization-discovery-card-metadata')?.textContent ?? '', /App connection/);
-			const connect = fixture.container.querySelector<HTMLButtonElement>('.customization-discovery-card-actions .monaco-button')!;
-			assert.strictEqual(connect.textContent, 'Connect');
-			connect.click();
-			await timeout(0);
-			assert.deepStrictEqual(fixture.commands, [{ id: McpCommandIds.ConnectApp, args: [undefined, 'outlook-direct', 'assistant'] }]);
-		} finally {
-			await browseSections.complete({ sourceId: 'agentFinder', sections: [] });
-			await fixture.requests[0].result.complete({ items: [app] });
-		}
-	});
+	for (const app of [
+		{ id: 'outlook-direct', name: 'Outlook / Microsoft 365 Mail', type: /App connection/ },
+		{ id: 'gmail-direct', name: 'Gmail (Direct)', type: /App connection/ },
+		{ id: 'monday', name: 'monday.com', type: /MCP server/i },
+		{ id: 'google-sheets', name: 'Google Sheets', type: /MCP server/i },
+	]) {
+		test(`opens Assistant connection setup from the ${app.name} Browse card`, async () => {
+			const browseSections = new DeferredPromise<ICustomizationMarketplaceBrowseSections>();
+			const nativeSource = signalCAppConnectionSource.id;
+			const card = resource(app.id, { sourceId: nativeSource, displayName: app.name });
+			const fixture = createPage(
+				['agentFinder', nativeSource],
+				[AICustomizationManagementSection.McpServers], [], undefined, [], browseSections.p,
+				{ [nativeSource]: [card] },
+			);
+			fixture.page.setVisible(true);
+			try {
+				await timeout(0);
+				assert.match(fixture.container.querySelector('.customization-discovery-card-metadata')?.textContent ?? '', app.type);
+				const connect = fixture.container.querySelector<HTMLButtonElement>('.customization-discovery-card-actions .monaco-button')!;
+				assert.strictEqual(connect.textContent, 'Connect');
+				connect.click();
+				await timeout(0);
+				assert.deepStrictEqual(fixture.commands, [{ id: McpCommandIds.ConnectApp, args: [undefined, app.id, 'assistant'] }]);
+			} finally {
+				await browseSections.complete({ sourceId: 'agentFinder', sections: [] });
+				await fixture.requests[0].result.complete({ items: [card] });
+			}
+		});
+	}
 
 	test('prioritizes editorial Browse content while remaining sources load', async () => {
 		const fixture = createPage(['agentFinder', 'copilotConnectors']);

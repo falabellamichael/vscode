@@ -23,11 +23,16 @@
 .monaco-workbench :is(.part.sessionspart, .sessions-window-host) .session-view .session-view-content {
 	background-color: var(--session-view-background);
 	color: var(--session-view-foreground);
+	--session-view-description-foreground: color-mix(in srgb, var(--session-view-foreground) 72%, transparent);
 	position: relative;
 }
 
 .monaco-workbench :is(.part.sessionspart, .sessions-window-host) .session-view .interactive-session {
 	--vscode-interactive-session-foreground: var(--session-view-foreground) !important;
+}
+
+.monaco-workbench :is(.part.sessionspart, .sessions-window-host) .session-view .interactive-session .interactive-item-container.interactive-response {
+	--vscode-descriptionForeground: var(--session-view-description-foreground);
 }
 
 /* Each grid leaf surfaces its own load progress on a bar pinned to its top, mirroring how each editor group owns its own ProgressBar.

@@ -60,6 +60,7 @@ import { ChatSessionStore, IChatSessionEntryMetadata } from '../model/chatSessio
 import { IChatSlashCommandService } from '../participants/chatSlashCommands.js';
 import { IChatTransferService } from '../model/chatTransferService.js';
 import { chatSessionResourceToId, getChatSessionType, isUntitledChatSession, LocalChatSessionUri } from '../model/chatUri.js';
+import { usesEditorToolRegistry } from '../../../../../platform/native/common/native.js';
 import { ChatRequestVariableSet, IChatRequestVariableEntry, isAgentHostCompletionVariableEntry, isExplicitFileOrImageVariableEntry, isPromptTextVariableEntry } from '../attachments/chatVariableEntries.js';
 import { IDynamicVariable } from '../attachments/chatVariables.js';
 import { ChatAgentLocation, SessionTypeSelectionReason, ChatConfiguration, ChatModeKind, CONTINUE_AGENT_HOST_CHAT_IN_COPILOT_ACTION_ID, getCopilotHarnessIntroductionMode, isLocalChatSessionSubjectToManagedPolicy, managedPolicyRequiresAgentHostMessage } from '../constants.js';
@@ -1149,7 +1150,7 @@ export class ChatService extends Disposable implements IChatService {
 			initialData,
 			location,
 			sessionResource,
-			canUseTools: false,
+			canUseTools: usesEditorToolRegistry(getChatSessionType(sessionResource)),
 			transferEditingSession: providedSession.transferredState?.editingSession,
 			inputState,
 			isReadOnly: providedSession.isReadOnly,
@@ -1239,7 +1240,7 @@ export class ChatService extends Disposable implements IChatService {
 			return this._sessionModels.acquireOrCreate({
 				location,
 				sessionResource: model.sessionResource,
-				canUseTools: false,
+				canUseTools: usesEditorToolRegistry(getChatSessionType(model.sessionResource)),
 			}, debugOwner);
 		} finally {
 			this._remoteSessionModelsPendingPublication.delete(model.sessionResource);
@@ -2272,7 +2273,7 @@ export class ChatService extends Disposable implements IChatService {
 					if (isLocalChatSessionSubjectToManagedPolicy(sessionResource, model.initialLocation) && this.managedPolicy.get()) {
 						throw new ErrorNoTelemetry(managedPolicyRequiresAgentHostMessage());
 					}
-					// MCP autostart: only run for native VS Code sessions (sidebar, new editors) but not for extension contributed sessions that have inputType set.
+					// Start eligible editor-owned MCP servers for chats that use workbench tools.
 					if (model.canUseTools) {
 						const autostartResult = new ChatMcpServersStarting(this.mcpService.autostart(token));
 						if (!autostartResult.isEmpty) {

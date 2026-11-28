@@ -36,7 +36,7 @@ import { ToolName } from '../common/toolNames';
 import { ICopilotTool, ToolRegistry } from '../common/toolsRegistry';
 import { formatUriForFileWidget } from '../common/toolUtils';
 import { getImageMimeType } from './imageToolUtils';
-import { assertFileNotContentExcluded, isFileExternalAndNeedsConfirmation, resolveToolInputPath } from './toolUtils';
+import { assertFileNotContentExcluded, getOptionalToolEndpoint, isFileExternalAndNeedsConfirmation, resolveToolInputPath } from './toolUtils';
 import { IGrepResultService } from './grepResultService';
 import { IRegionContextProviderService, type PathInfo, type RegionResult } from '../../../platform/languageContextProvider/common/regionContextProvider';
 import { Disposable } from '../../../util/vs/base/common/lifecycle';
@@ -521,7 +521,7 @@ export class ReadFileTool extends Disposable implements ICopilotTool<ReadFilePar
 	}
 
 	private async sendReadFileTelemetry(outcome: string, options: Pick<vscode.LanguageModelToolInvocationOptions<ReadFileParams>, 'model' | 'chatRequestId' | 'input' | 'chatStreamToolCallId'>, { start, end, truncated }: IParamRanges, uri: URI | undefined, documentSnapshot?: TextDocumentSnapshot | NotebookDocumentSnapshot) {
-		const model = options.model && (await this.endpointProvider.getChatEndpoint(options.model)).model;
+		const model = (await getOptionalToolEndpoint(options, this.endpointProvider))?.model;
 		const extensionSkillInfo = uri && this.customInstructionsService.getExtensionSkillInfo(uri);
 		const skillInfo = extensionSkillInfo || (uri && this.customInstructionsService.getSkillInfo(uri));
 		const fileType = skillInfo ? 'skill' : '';

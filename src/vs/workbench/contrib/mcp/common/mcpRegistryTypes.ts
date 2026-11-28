@@ -24,7 +24,7 @@ export interface IMcpMessageTransport extends IDisposable {
 	readonly state: IObservable<McpConnectionState>;
 	readonly onDidLog: Event<{ level: LogLevel; message: string }>;
 	readonly onDidReceiveMessage: Event<MCP.JSONRPCMessage>;
-	send(message: MCP.JSONRPCMessage): void;
+	send(message: MCP.JSONRPCMessage, errorOnUserInteraction?: boolean): void;
 	stop(): void;
 }
 

@@ -18,7 +18,7 @@ export const ClickBrowserToolData: IToolData = {
 	toolReferenceName: BrowserChatToolReferenceName.ClickElement,
 	displayName: localize('clickBrowserTool.displayName', 'Click Element'),
 	userDescription: localize('clickBrowserTool.userDescription', 'Click an element in a browser page'),
-	modelDescription: 'Click on an element in a browser page.',
+	modelDescription: 'Click a browser element using its ref from the latest page snapshot (for example, ref "e9"), or a Playwright selector. The element field describes the target for the user.',
 	icon: Codicon.cursor,
 	source: ToolDataSource.Internal,
 	inputSchema: {
@@ -51,7 +51,7 @@ export const ClickBrowserToolData: IToolData = {
 			},
 		},
 		required: ['pageId', 'element'],
-		$comment: 'One of "ref" or "selector" is required.',
+		anyOf: [{ required: ['ref'] }, { required: ['selector'] }],
 	},
 };
 
@@ -105,7 +105,7 @@ export class ClickBrowserTool implements IToolImpl {
 		}
 
 		if (!selector) {
-			return errorResult('Either a "ref" or "selector" parameter is required.');
+			return errorResult('Either a "ref" or "selector" parameter is required. Supply the ref shown in the page snapshot, or a Playwright selector. The element description alone cannot locate a target.');
 		}
 
 		const button = params.button ?? 'left';

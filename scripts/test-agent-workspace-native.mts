@@ -473,7 +473,7 @@ try {
 		const sandboxReview = page.getByRole('dialog').filter({ hasText: 'Connect PayPal (Sandbox)' });
 		await sandboxReview.waitFor();
 		const sandboxDetails = await sandboxReview.innerText();
-		assert.ok(sandboxDetails.includes('https://mcp.sandbox.paypal.com/http'));
+			assert.ok(sandboxDetails.includes('https://mcp.sandbox.paypal.com/sse'));
 		assert.ok(sandboxDetails.includes('sandbox test account'));
 		report.payPalSandboxVerified = true;
 		await page.keyboard.press('Escape');
@@ -545,7 +545,7 @@ try {
 		await gallery.getByText('Browse customizations', { exact: true }).waitFor();
 		await gallery.getByRole('button', { name: 'View all customizations from Signal-C App Connections', exact: true }).waitFor();
 		await capture(page, 'browse-customizations-app-connections.png');
-		await gallery.getByRole('button', { name: 'Customization source: All Sources', exact: true }).click();
+		await gallery.getByRole('button', { name: /^(?:Customization source|Customization marketplace|Marketplace): All (?:Sources|Marketplaces)$/, exact: true }).click();
 		await page.getByRole('menu').getByText('Signal-C App Connections', { exact: true }).click();
 		await gallery.locator('.customization-discovery-search').click({ position: { x: 80, y: 12 } });
 		await page.keyboard.type('Datadog EU1');
@@ -702,15 +702,73 @@ try {
 		if (conversation) {
 			stage = 'completing the native mock conversation';
 			await selectMockModel(agents);
+			stage = 'selecting a composer output type';
+			const outputList = agents.locator('.sessions-output-type-picker-list');
+			const assertOutputBesidePlus = async (composer: Locator, icon: string) => {
+				const indicator = composer.locator(`.chat-output-type-indicator.${icon}`);
+				await indicator.waitFor();
+				const [plus, selected] = await Promise.all([
+					composer.locator('.chat-input-toolbars .action-label.codicon-add-compact').boundingBox(),
+					indicator.boundingBox(),
+				]);
+				assert.ok(plus && selected && selected.x >= plus.x + plus.width && selected.x - plus.x - plus.width <= 8 && Math.abs(plus.y - selected.y) <= 4,
+					'The selected output icon must sit immediately to the right of + on the same row');
+			};
+			const newComposer = agents.locator('.new-chat-widget-container .interactive-input-part');
+			await newComposer.locator('.chat-input-toolbars .action-label.codicon-add-compact').click();
+			await agents.getByText('Output Type...', { exact: true }).click();
+			await outputList.getByText('Website', { exact: true }).first().click();
+			await assertOutputBesidePlus(newComposer, 'codicon-globe');
 			await input.click(); await agents.keyboard.press('Enter');
 			await agents.locator('.interactive-session').getByText(responseText, { exact: false }).last().waitFor({ timeout: 45000 });
 			report.conversationCompleted = true;
 			report.modelRequestCountBeforeHandoff = mock.getRequests().length;
 			assert.ok(report.modelRequestCountBeforeHandoff > 0, 'The native conversation must reach the local model endpoint');
+			const outputRequest = mock.getRequests().find(request => JSON.stringify(request).includes(draft));
+			assert.ok(outputRequest && JSON.stringify(outputRequest).includes('website'), 'The selected output type must reach the model request');
+			assert.ok(JSON.stringify(outputRequest).includes('<requested_output>'), 'The session output contribution must steer the model request through host instructions');
+			const ongoingComposer = agents.locator('.chat-view-chat .interactive-input-part').last();
+			const outputIndicator = ongoingComposer.locator('.chat-output-type-indicator');
+			await assertOutputBesidePlus(ongoingComposer, 'codicon-globe');
+			await capture(agents, 'output-type-website.png');
+			await outputIndicator.click();
+			await outputList.locator('.monaco-list-row', { hasText: 'Website' }).filter({ has: agents.locator('.codicon-check') }).waitFor();
+			await outputList.getByText('Document', { exact: true }).first().click();
+			await assertOutputBesidePlus(ongoingComposer, 'codicon-file-text');
+			await outputIndicator.press('Enter');
+			await outputList.getByText('Output (Auto-Select)', { exact: true }).first().click();
+			await outputIndicator.waitFor({ state: 'hidden' });
 			input = agents.locator('.interactive-input-part .monaco-editor').last();
 			await input.click(); await agents.keyboard.type(draft);
 			await capture(agents, 'native-conversation-completed.png');
 			console.log('Completed the native conversation through the local mock endpoint');
+		}
+		stage = 'checking the Assistant view activity bar';
+		const assistantEntry = agents.locator('.session-section', { hasText: 'Assistant' });
+		await assistantEntry.first().click();
+		const assistantBar = agents.locator('.custom-view-activity-bar');
+		await assistantBar.waitFor();
+		const browserTab = assistantBar.locator('.action-label.codicon-globe');
+		const terminalTab = assistantBar.locator('.action-label.codicon-terminal');
+		await Promise.all([browserTab.waitFor(), terminalTab.waitFor()]);
+		const [gridBox, barBox] = await Promise.all([
+			agents.locator('.part.customviewgridpart').boundingBox(),
+			assistantBar.boundingBox(),
+		]);
+		assert.ok(gridBox && barBox && barBox.x >= gridBox.x && barBox.x + barBox.width >= gridBox.x + gridBox.width - 8,
+			'The Assistant view activity bar must dock at the right edge of the custom view');
+		await browserTab.click();
+		await agents.locator('.part.editor .browser-root').waitFor();
+		assert.ok(await agents.locator('.part.customviewgridpart').isVisible(),
+			'The Assistant view must stay open beside the browser editor');
+		await terminalTab.click();
+		await agents.locator('.part.panel').waitFor();
+		assert.ok(await agents.locator('.part.customviewgridpart').isVisible(),
+			'The Assistant view must stay open beside the terminal panel');
+		await capture(agents, 'assistant-activity-bar.png');
+		if (conversation) {
+			await agents.locator('.monaco-list-row', { hasText: 'Signal-C folderless draft' }).first().click();
+			await agents.locator('.part.customviewgridpart').waitFor({ state: 'hidden' });
 		}
 		assert.equal((await checkWindows(stage)).length, 1);
 		stage = 'first empty IDE';

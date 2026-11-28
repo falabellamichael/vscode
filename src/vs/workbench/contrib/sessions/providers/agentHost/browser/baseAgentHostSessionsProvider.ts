@@ -79,6 +79,7 @@ import { IConfigurationService } from '../../../../../../platform/configuration/
 import { IInstantiationService } from '../../../../../../platform/instantiation/common/instantiation.js';
 import { ILabelService } from '../../../../../../platform/label/common/label.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
+import { REACH_CHAT_PROVIDER_ID } from '../../../../../../platform/native/common/native.js';
 import { IDialogService } from '../../../../../../platform/dialogs/common/dialogs.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../../platform/storage/common/storage.js';
 import { IUriIdentityService } from '../../../../../../platform/uriIdentity/common/uriIdentity.js';
@@ -104,7 +105,7 @@ import { getAgentHostApprovalDefault, getChatDefaultConfiguration, isAutoApprove
 import { ILanguageModelsService } from '../../../../chat/common/languageModels.js';
 import { getRegisteredLanguageModels, getVisibleLanguageModelsForTarget, resolveConfiguredModel, resolveModelIdentifier, resolveModelIdentifierFromLanguageModels } from '../../../../chat/common/modelSelection.js';
 import { canInitializeCodexWithoutGitHub } from '../../../../../services/agentHost/browser/codexAccountService.js';
-import { buildMutableConfigSchema, IAgentHostMcpServer, IAgentHostSessionsProvider, IAgentMergeClientState, resolvedConfigsEqual } from '../../../common/agentHostSessionsProvider.js';
+import { buildMutableConfigSchema, IAgentHostMcpServer, IAgentHostSessionsProvider, IAgentMergeClientState, LOCAL_AGENT_HOST_PROVIDER_ID, resolvedConfigsEqual } from '../../../common/agentHostSessionsProvider.js';
 import { agentHostSessionWorkspaceKey, buildAgentHostChatWorkspaceWithScratchFolders, type IFolderGitHubInfoResolver, withoutScratchFolders } from '../../../common/agentHostSessionWorkspace.js';
 import { USE_WORKTREE_SETTING, isSessionConfigComplete } from '../../../common/sessionConfig.js';
 import { linkKey } from '../../../common/sessionLinks.js';
@@ -5424,8 +5425,13 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 	 */
 	protected _syncSessionTypesFromRootState(rootState: RootState): void {
 		this._syncAgentCapabilities(rootState.agents);
-		const setupAgents = new Set(readAgentSdkSetupInfos(rootState).map(setup => setup.agent));
 		const canInitializeCodexAccount = canInitializeCodexWithoutGitHub(readCodexAccountInfo(rootState));
+		const selectionSetup = new Map(readAgentSdkSetupInfos(rootState).map(({ agent }) => [agent, {
+			canInitializeWithoutGitHub: agent === CODEX_AGENT_PROVIDER_ID && canInitializeCodexAccount,
+		}]));
+		if (this.id === LOCAL_AGENT_HOST_PROVIDER_ID) {
+			selectionSetup.set(REACH_CHAT_PROVIDER_ID, { canInitializeWithoutGitHub: true });
+		}
 		const next = rootState.agents
 			.filter(agent => this._shouldAdvertiseAgent(agent.provider))
 			.map((agent): ISessionType => ({
@@ -5433,9 +5439,7 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 				// Isolation is host-owned; the workspace schema determines the available choices.
 				supportsWorktreeConfiguration: true,
 				authRequirement: resolveAgentAuthRequirement(agent),
-				initializationOnSelection: setupAgents.has(agent.provider) ? {
-					canInitializeWithoutGitHub: agent.provider === CODEX_AGENT_PROVIDER_ID && canInitializeCodexAccount,
-				} : undefined,
+				initializationOnSelection: selectionSetup.get(agent.provider),
 				// The chat session contribution and language models for an agent-host
 				// agent are registered under its resource scheme (`agent-host-<provider>`),
 				// not the bare provider id, so carry it for availability lookups.

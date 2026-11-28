@@ -280,6 +280,7 @@
 	height: var(--vscode-spacing-size200, 20px);
 	padding: 0;
 	line-height: 1;
+	color: var(--session-view-foreground, inherit);
 }
 
 .chat-composite-bar-toolbar .monaco-action-bar .actions-container {

@@ -11,11 +11,12 @@ import { toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { mock } from '../../../../base/test/common/mock.js';
 import { LogLevel, NullLogService } from '../../../../platform/log/common/log.js';
-import { MainThreadMcpShape } from '../../common/extHost.protocol.js';
+import { IMcpAuthenticationDetails, IMcpAuthenticationOptions, IMcpOAuthGrant, MainThreadMcpShape } from '../../common/extHost.protocol.js';
 import { createAuthMetadata, CommonRequestInit, CommonResponse, IAuthMetadata, McpHTTPHandle } from '../../common/extHostMcp.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { McpConnectionState, McpServerTransportHTTP, McpServerTransportType, UserInteractionRequiredError } from '../../../contrib/mcp/common/mcpTypes.js';
 import { MCP } from '../../../contrib/mcp/common/modelContextProtocol.js';
+import { getOAuthTokenFingerprint } from '../../../services/authentication/common/authentication.js';
 
 // Test constants to avoid magic strings
 const TEST_MCP_URL = 'https://example.com/mcp';
@@ -185,14 +186,18 @@ suite('ExtHostMcp', () => {
 		function createHandle(options: {
 			uri?: URI;
 			headers?: McpServerTransportHTTP['headers'];
+			oauth?: McpServerTransportHTTP['oauth'];
+			transport?: McpServerTransportHTTP['transport'];
+			startQuiet?: boolean;
 			check?: (url: string) => Promise<string | undefined>;
 			respond?: (url: string, init: CommonRequestInit) => CommonResponse;
 			onState?: (state: McpConnectionState) => void;
-			getToken?: () => Promise<string>;
+			getToken?: (options: IMcpAuthenticationOptions, details: IMcpAuthenticationDetails) => Promise<string | IMcpOAuthGrant>;
 		} = {}) {
 			const requests: { url: string; method: string; headers: Record<string, string>; body: Uint8Array<ArrayBuffer> | undefined }[] = [];
 			const checkedUrls: string[] = [];
 			const states: McpConnectionState[] = [];
+			const messages: string[] = [];
 			const signals: AbortSignal[] = [];
 			const backchannelStopped = new DeferredPromise<void>();
 			const proxy = Object.assign(new class extends mock<MainThreadMcpShape>() {
@@ -200,14 +205,15 @@ suite('ExtHostMcp', () => {
 					states.push(state);
 					options.onState?.(state);
 				}
-				override $onDidReceiveMessage(): void { }
+				override $onDidReceiveMessage(_id: number, message: string): void { messages.push(message); }
 				override $onDidPublishLog(_id: number, _level: LogLevel, message: string): void {
 					if (message.startsWith('405 status connecting')) {
 						void backchannelStopped.complete();
 					}
 				}
-				override async $getTokenFromServerMetadata(): Promise<string> {
-					return options.getToken ? options.getToken() : 'test-access-token';
+				override async $getTokenFromServerMetadata(_id: number, details: IMcpAuthenticationDetails, authOptions: IMcpAuthenticationOptions): Promise<IMcpOAuthGrant> {
+					const token = options.getToken ? await options.getToken(authOptions, details) : 'test-access-token';
+					return typeof token === 'string' ? { accessToken: token, scopes: details.scopes ?? details.resourceMetadata?.scopes_supported ?? details.authorizationServerMetadata.scopes_supported ?? [] } : token;
 				}
 				override $logMcpAuthSetup(): void { }
 			}, {
@@ -230,9 +236,11 @@ suite('ExtHostMcp', () => {
 				type: McpServerTransportType.HTTP,
 				uri: options.uri ?? URI.parse(TEST_MCP_URL),
 				headers: options.headers ?? [],
-			}, proxy, new NullLogService()));
+				oauth: options.oauth,
+				transport: options.transport,
+			}, proxy, new NullLogService(), options.startQuiet));
 
-			return { handle, requests, checkedUrls, states, signals, backchannelStopped };
+			return { handle, requests, checkedUrls, states, signals, backchannelStopped, messages };
 		}
 
 		for (const status of [307, 308]) {
@@ -516,14 +524,164 @@ suite('ExtHostMcp', () => {
 			});
 		}
 
+		test('requests Google browser authorization before initialize can return a public tool catalog', async () => {
+			const gmail = 'https://gmailmcp.googleapis.com/mcp/v1';
+			const issuer = 'https://accounts.google.com';
+			const { handle, requests, states } = createHandle({
+				uri: URI.parse(gmail),
+				oauth: { clientId: 'registered-client-id' },
+				getToken: async () => { throw new CancellationError(); },
+				respond: (url) => {
+					if (url === gmail) { return createMockResponse({ status: 202, url }); }
+					const body = url.includes('oauth-protected-resource')
+						? { resource: gmail, authorization_servers: [issuer] }
+						: { issuer, authorization_endpoint: `${issuer}/o/oauth2/v2/auth`, token_endpoint: 'https://oauth2.googleapis.com/token', response_types_supported: ['code'] };
+					return createMockResponse({ url, body: JSON.stringify(body) });
+				},
+			});
+			await handle.send(JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: {} }));
+			assert.deepStrictEqual({ endpointRequests: requests.filter(request => request.url === gmail), state: states.at(-1) }, {
+				endpointRequests: [], state: { state: McpConnectionState.Kind.Stopped, reason: 'needs-user-interaction' },
+			});
+		});
+
+		test('starts a configured SSE connection with an authenticated GET', async () => {
+			const { handle, requests } = createHandle({
+				transport: 'sse',
+				respond: (url, init) => {
+					if (url === TEST_MCP_URL) {
+						return init.headers.Authorization
+							? { ...createMockResponse({ url, headers: { 'Content-Type': 'text/event-stream' } }), body: new Response('event: endpoint\ndata: /messages\n\n').body }
+							: createMockResponse({ url, status: 401, headers: { 'WWW-Authenticate': 'bearer scope="read"' } });
+					}
+					if (url.includes('oauth-protected-resource')) {
+						return createMockResponse({ url, body: JSON.stringify({ resource: TEST_MCP_URL, authorization_servers: [TEST_AUTH_SERVER] }) });
+					}
+					if (url.includes('oauth-authorization-server')) {
+						return createMockResponse({ url, body: JSON.stringify({ issuer: TEST_AUTH_SERVER, authorization_endpoint: `${TEST_AUTH_SERVER}/authorize`, token_endpoint: `${TEST_AUTH_SERVER}/token`, response_types_supported: ['code'] }) });
+					}
+					return createMockResponse({ status: 202, url });
+				},
+			});
+			await handle.send('fixture message');
+			assert.deepStrictEqual(requests.filter(request => [TEST_MCP_URL, `${new URL(TEST_MCP_URL).origin}/messages`].includes(request.url)).map(request => [request.method, request.headers.Authorization]),
+				[['GET', undefined], ['GET', 'Bearer test-access-token'], ['POST', 'Bearer test-access-token']]);
+		});
+
+		test('keeps a provider permission error without re-registering the OAuth client', async () => {
+			let tokenRequests = 0;
+			const { handle, requests } = createHandle({
+				getToken: async () => { tokenRequests++; return 'authorized-token'; },
+				respond: (url, init) => {
+					if (url === TEST_MCP_URL) {
+						return init.headers.Authorization
+							? createMockResponse({ url, status: 403, body: 'Organization access denied' })
+							: createMockResponse({ url, status: 401, headers: { 'WWW-Authenticate': 'Bearer scope="read"' } });
+					}
+					const body = url.includes('oauth-protected-resource')
+						? { resource: TEST_MCP_URL, authorization_servers: [TEST_AUTH_SERVER] }
+						: { issuer: TEST_AUTH_SERVER, authorization_endpoint: `${TEST_AUTH_SERVER}/authorize`, token_endpoint: `${TEST_AUTH_SERVER}/token`, response_types_supported: ['code'] };
+					return createMockResponse({ url, body: JSON.stringify(body) });
+				},
+			});
+			const headers: Record<string, string> = {};
+			const result = await handle['_fetchWithAuthRetry'](TEST_MCP_URL, { method: 'POST', headers }, headers);
+			assert.deepStrictEqual({ status: result.status, detail: await result.text(), tokenRequests, requests: requests.filter(request => request.url === TEST_MCP_URL).map(request => request.headers.Authorization) }, {
+				status: 403, detail: 'Organization access denied', tokenRequests: 1, requests: [undefined, 'Bearer authorized-token'],
+			});
+		});
+
+		for (const scenario of ['granted', 'declined', 'quiet', 'cancelled during consent', 'still forbidden', 'legacy SSE', 'partially granted on sign-in', 'legacy cached scopes'] as const) {
+			test(`keeps MCP connected when additional tool permission is ${scenario}`, async () => {
+				const endpoint = `${new URL(TEST_MCP_URL).origin}/messages`;
+				const scopeChallenge = 'Bearer error="insufficient_scope", scope="write"';
+				const consentRequested = new DeferredPromise<void>();
+				const consentResponse = new DeferredPromise<string>();
+				let scopeRequests = 0;
+				const initiallyRequestedBoth = scenario === 'partially granted on sign-in' || scenario === 'legacy cached scopes';
+				const { handle, requests, states, messages } = createHandle({
+					startQuiet: scenario !== 'quiet',
+					transport: scenario === 'legacy SSE' ? 'sse' : undefined,
+					getToken: async (options, details) => {
+						if (!options.scopeUpgradeFrom) {
+							if (initiallyRequestedBoth && scopeRequests === 0) {
+								return { accessToken: 'read-token', scopes: scenario === 'legacy cached scopes' ? ['read', 'write'] : ['read'] };
+							}
+							return details.scopes?.includes('write') ? 'write-token' : 'read-token';
+						}
+						scopeRequests++;
+						assert.strictEqual(options.errorOnUserInteraction, scenario === 'quiet');
+						assert.deepStrictEqual(details.scopes, ['read', 'write']);
+						assert.deepStrictEqual(options.scopeUpgradeFrom, { scopes: initiallyRequestedBoth ? ['read', 'write'] : ['read'], tokenFingerprint: await getOAuthTokenFingerprint('read-token') });
+						if (scenario === 'quiet') { throw new UserInteractionRequiredError('authentication'); }
+						if (scenario === 'declined') { throw new CancellationError(); }
+						if (scenario === 'cancelled during consent') {
+							void consentRequested.complete();
+							return consentResponse.p;
+						}
+						return 'write-token';
+					},
+					respond: (url, init) => {
+						if (url === TEST_MCP_URL || url === endpoint) {
+							if (init.method === 'GET' && scenario !== 'legacy SSE') { return createMockResponse({ url, status: 405 }); }
+							if (!init.headers.Authorization) {
+								const advertised = initiallyRequestedBoth ? 'read write' : 'read';
+								return createMockResponse({ url, status: 401, headers: { 'WWW-Authenticate': `Bearer scope="${advertised}"` } });
+							}
+							if (init.method === 'GET') {
+								return { ...createMockResponse({ url, headers: { 'Content-Type': 'text/event-stream' } }), body: new Response('event: endpoint\ndata: /messages\n\n').body };
+							}
+							const request = JSON.parse(new TextDecoder().decode(init.body));
+							if (request.params?.name === 'write' && (init.headers.Authorization === 'Bearer read-token' || scenario === 'still forbidden')) {
+								return createMockResponse({ url, status: 403, headers: { 'WWW-Authenticate': scopeChallenge } });
+							}
+							return createMockResponse({ url, status: 202 });
+						}
+						const body = url.includes('oauth-protected-resource')
+							? { resource: TEST_MCP_URL, authorization_servers: [TEST_AUTH_SERVER] }
+							: { issuer: TEST_AUTH_SERVER, authorization_endpoint: `${TEST_AUTH_SERVER}/authorize`, token_endpoint: `${TEST_AUTH_SERVER}/token`, response_types_supported: ['code'] };
+						return createMockResponse({ url, body: JSON.stringify(body) });
+					},
+				});
+				const toolCall = (id: number, name: string) => JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name } });
+				await handle.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }));
+				const originalWrite = handle.send(toolCall(2, 'write'), scenario === 'quiet');
+				if (scenario === 'cancelled during consent') {
+					await consentRequested.p;
+					await handle.send(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 2 } }));
+					await consentResponse.complete('write-token');
+				}
+				await originalWrite;
+				await handle.send(toolCall(3, 'read'), true);
+				const granted = scenario === 'granted' || scenario === 'legacy SSE' || initiallyRequestedBoth;
+				const posts = requests.filter(request => (request.url === TEST_MCP_URL || request.url === endpoint) && request.method === 'POST' && request.headers.Authorization);
+				const tokensFor = (id: number) => posts.filter(request => JSON.parse(new TextDecoder().decode(request.body)).id === id).map(request => request.headers.Authorization);
+				assert.deepStrictEqual(tokensFor(2), granted || scenario === 'still forbidden' ? ['Bearer read-token', 'Bearer write-token'] : ['Bearer read-token']);
+				assert.deepStrictEqual(tokensFor(3), [granted ? 'Bearer write-token' : 'Bearer read-token']);
+				assert.deepStrictEqual(states, [{ state: McpConnectionState.Kind.Running }]);
+				assert.strictEqual(scopeRequests, 1);
+				assert.deepStrictEqual(messages.map(message => JSON.parse(message)), granted || scenario === 'cancelled during consent' ? [] : [{
+					jsonrpc: '2.0', id: 2, error: { code: MCP.INTERNAL_ERROR, message: 'This tool requires additional sign-in permissions for the connected account.' },
+				}]);
+			});
+		}
+
 		for (const invalidToken of [false, true]) {
 			test(invalidToken ? 'retries a Google Workspace invalid-token challenge' : 'keeps the Gmail API-disabled response without replacing the signed-in account', async () => {
 				const gmailUrl = 'https://gmailmcp.googleapis.com/mcp/v1';
 				const googleAuth = 'https://accounts.google.com';
 				const disabled = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { isError: true, content: [{ type: 'text', text: 'Gmail MCP API has not been used in this project before or it is disabled.' }] } });
 				let authenticatedRequests = 0;
+				const rejectedFingerprints: string[] = [];
 				const { handle, requests } = createHandle({
 					uri: URI.parse(gmailUrl),
+					getToken: async ({ rejectedTokenFingerprint }) => {
+						if (rejectedTokenFingerprint) {
+							rejectedFingerprints.push(rejectedTokenFingerprint);
+							return 'replacement-token';
+						}
+						return 'test-access-token';
+					},
 					respond: (url, init) => {
 						if (url === gmailUrl) {
 							if (!init.headers.Authorization) {
@@ -549,10 +707,23 @@ suite('ExtHostMcp', () => {
 				const response = await handle['_fetchWithAuthRetry'](gmailUrl, { method: 'POST', headers }, headers);
 				assert.strictEqual(response.status, invalidToken ? 202 : 403);
 				assert.deepStrictEqual(requests.filter(request => request.url === gmailUrl).map(request => request.headers.Authorization),
-					invalidToken ? [undefined, 'Bearer test-access-token', 'Bearer test-access-token'] : [undefined, 'Bearer test-access-token']);
+					invalidToken ? [undefined, 'Bearer test-access-token', 'Bearer replacement-token'] : [undefined, 'Bearer test-access-token']);
+				assert.deepStrictEqual(rejectedFingerprints, invalidToken ? [await getOAuthTokenFingerprint('test-access-token')] : []);
 				if (!invalidToken) { assert.strictEqual(await response.text(), disabled); }
 			});
 		}
+
+		test('preserves manually configured authorization when the resource rejects it', async () => {
+			const { handle, requests } = createHandle({
+				getToken: async () => assert.fail('A manually configured header does not belong to OAuth session recovery'),
+				respond: url => createMockResponse({ url, status: 401, headers: { 'WWW-Authenticate': 'Bearer error="invalid_token"' } }),
+			});
+			const headers = { authorization: 'Bearer configured-value' };
+			const response = await handle['_fetchWithAuthRetry'](TEST_MCP_URL, { method: 'POST', headers }, headers);
+			assert.deepStrictEqual({ status: response.status, requests: requests.map(request => [request.url, request.headers.authorization]) }, {
+				status: 401, requests: [[TEST_MCP_URL, 'Bearer configured-value']],
+			});
+		});
 
 		test('continues rejecting non-HTTP redirect destinations', async () => {
 			const { handle, requests } = createHandle({
@@ -802,7 +973,7 @@ suite('ExtHostMcp', () => {
 				assert.deepStrictEqual(authMetadata.scopes, ['read']);
 			});
 
-			test('should return true when updating from defined scopes to undefined (no scope in header)', async () => {
+			test('preserves discovered scopes when an auth challenge omits scope', async () => {
 				const { authMetadata } = await createTestAuthMetadata({
 					scopes: ['read']
 				});
@@ -816,8 +987,8 @@ suite('ExtHostMcp', () => {
 
 				const result = authMetadata.update(response.headers);
 
-				assert.strictEqual(result, true);
-				assert.strictEqual(authMetadata.scopes, undefined);
+				assert.strictEqual(result, false);
+				assert.deepStrictEqual(authMetadata.scopes, ['read']);
 			});
 
 			test('should return false when no WWW-Authenticate header and scopes are already undefined', async () => {

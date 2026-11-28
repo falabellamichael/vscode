@@ -68,6 +68,7 @@ export interface IPermissionPickerDelegate {
 	readonly getExtensionPermissions?: () => IExtensionPermissionState | undefined;
 	readonly setExtensionPermission?: (groupId: string, item: IChatSessionProviderOptionItem) => void;
 	readonly getPermissionLevelHover?: (level: ChatPermissionLevel, meta: IPermissionLevelMeta) => string | undefined;
+	readonly getProviderPermissionLevelMeta?: (level: ChatPermissionLevel) => { label?: string; detail?: string } | undefined;
 	/**
 	 * Whether the experimental "Sandboxing for terminal" toggle may be shown.
 	 * Evaluated each time the picker opens so a harness switch is reflected.
@@ -243,6 +244,8 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
 				const organizationDefault = delegate.defaultSettingKey === ChatConfiguration.DefaultConfiguration ? getOrganizationDefaultApprovalLevel(configurationService) : undefined;
 				const actions: IActionWidgetDropdownAction[] = levels.map(level => {
 					const meta = getPermissionLevelMeta(level);
+					const provider = delegate.getProviderPermissionLevelMeta?.(level);
+					const label = provider?.label ?? meta.label;
 					const unavailable = getUnavailablePresentation(level);
 					const hover = unavailable
 						? unavailable.hover
@@ -258,13 +261,13 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
 					return {
 						...action,
 						id: meta.id,
-						label: meta.label,
+						label,
 						...getPermissionLevelBadge(level, !!unavailable, organizationDefault),
 						icon: meta.icon,
 						checked: currentLevel === level,
 						enabled: !unavailable,
 						inlineToggle,
-						...(unavailable ? { description: unavailable.description, ariaDescription: unavailable.ariaDescription } : { detail: meta.detail }),
+						...(unavailable ? { description: unavailable.description, ariaDescription: unavailable.ariaDescription } : { detail: provider?.detail ?? meta.detail }),
 						tooltip: '',
 						hover: {
 							content: hover,
@@ -276,7 +279,7 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
 							// Elevated levels show a one-time confirmation warning.
 							if (meta.elevated && !await maybeConfirmElevatedPermissionLevel(level, this.dialogService, storageService, {
 								defaultSettingKey: delegate.defaultSettingKey,
-								levelLabel: meta.label,
+								levelLabel: label,
 							})) {
 								return;
 							}
@@ -436,7 +439,7 @@ export class PermissionPickerActionItem extends ChatInputPickerActionViewItem {
 		} else {
 			const meta = getPermissionLevelMeta(level);
 			icon = meta.icon;
-			label = meta.shortLabel;
+			label = this.delegate.getProviderPermissionLevelMeta?.(level)?.label ?? meta.shortLabel;
 			tooltip = this.delegate.getPermissionLevelHover?.(level, meta) ?? meta.description;
 			if (sandboxed) {
 				sandboxIcon = this.delegate.getSandboxToggle !== undefined;

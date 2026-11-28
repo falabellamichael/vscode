@@ -22,6 +22,7 @@ export const enum PromptInputState {
  */
 export interface IPromptInputModel extends IPromptInputModelState {
 	readonly state: PromptInputState;
+	readonly continuationPrompt?: string;
 
 	readonly onDidStartInput: Event<IPromptInputModelState>;
 	readonly onDidChangeInput: Event<IPromptInputModelState>;
@@ -83,6 +84,7 @@ export class PromptInputModel extends Disposable implements IPromptInputModel {
 	private _commandStartX: number = 0;
 	private _lastPromptLine: string | undefined;
 	private _continuationPrompt: string | undefined;
+	get continuationPrompt(): string | undefined { return this._continuationPrompt; }
 	private _shellType: TerminalShellType | undefined;
 
 	private _lastUserInput: string = '';

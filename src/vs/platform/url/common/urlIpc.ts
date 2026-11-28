@@ -8,7 +8,7 @@ import { Event } from '../../../base/common/event.js';
 import { URI } from '../../../base/common/uri.js';
 import { Client, IChannel, IClientRouter, IConnectionHub, IServerChannel } from '../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../log/common/log.js';
-import { IOpenURLOptions, IURLHandler } from './url.js';
+import { IOpenURLOptions, IURLHandler, protocolUrlForLog } from './url.js';
 
 export class URLHandlerChannel implements IServerChannel {
 
@@ -50,8 +50,9 @@ export class URLHandlerRouter implements IClientRouter<string> {
 
 		if (Array.isArray(arg) && arg.length > 0) {
 			const uri = URI.revive(arg[0]);
+			const logUri = protocolUrlForLog(uri);
 
-			this.logService.trace('URLHandlerRouter#routeCall() with URI argument', uri.toString(true));
+			this.logService.trace('URLHandlerRouter#routeCall() with URI argument', logUri);
 
 			if (uri.query) {
 				const match = /\bwindowId=(\d+)/.exec(uri.query);
@@ -59,7 +60,7 @@ export class URLHandlerRouter implements IClientRouter<string> {
 				if (match) {
 					const windowId = match[1];
 
-					this.logService.trace(`URLHandlerRouter#routeCall(): found windowId query parameter with value "${windowId}"`, uri.toString(true));
+					this.logService.trace(`URLHandlerRouter#routeCall(): found windowId query parameter with value "${windowId}"`, logUri);
 
 					const regex = new RegExp(`window:${windowId}`);
 					const connection = hub.connections.find(c => {
@@ -68,14 +69,14 @@ export class URLHandlerRouter implements IClientRouter<string> {
 						return regex.test(c.ctx);
 					});
 					if (connection) {
-						this.logService.trace('URLHandlerRouter#routeCall(): found a connection to route', uri.toString(true));
+						this.logService.trace('URLHandlerRouter#routeCall(): found a connection to route', logUri);
 
 						return connection;
 					} else {
-						this.logService.trace('URLHandlerRouter#routeCall(): did not find a connection to route', uri.toString(true));
+						this.logService.trace('URLHandlerRouter#routeCall(): did not find a connection to route', logUri);
 					}
 				} else {
-					this.logService.trace('URLHandlerRouter#routeCall(): did not find windowId query parameter', uri.toString(true));
+					this.logService.trace('URLHandlerRouter#routeCall(): did not find windowId query parameter', logUri);
 				}
 			}
 		} else {

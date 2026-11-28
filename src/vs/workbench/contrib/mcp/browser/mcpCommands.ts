@@ -18,6 +18,7 @@ import { Event } from '../../../../base/common/event.js';
 import { createMarkdownCommandLink, MarkdownString } from '../../../../base/common/htmlContent.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { autorun, derived, derivedObservableWithCache, observableValue } from '../../../../base/common/observable.js';
+import { isNative } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { basename } from '../../../../base/common/resources.js';
 import { hasKey, isDefined } from '../../../../base/common/types.js';
@@ -38,6 +39,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { ILabelService } from '../../../../platform/label/common/label.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { mcpAutoStartConfig, McpAutoStartValue } from '../../../../platform/mcp/common/mcpManagement.js';
+import { isSignalCQuickBooksSandboxStore } from '../../../../platform/native/common/native.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { observableConfigValue } from '../../../../platform/observable/common/platformObservableUtils.js';
 import { IQuickInputButton, IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../../../platform/quickinput/common/quickInput.js';
@@ -75,7 +77,7 @@ import { IMcpCopilotGlobalConfigurationService } from '../common/mcpCopilotGloba
 import { IMcpRegistry } from '../common/mcpRegistryTypes.js';
 import { HasInstalledMcpServersContext, IMcpSamplingService, IMcpServer, IMcpServerStartOpts, IMcpService, IMcpWorkbenchService, InstalledMcpServersViewId, LazyCollectionState, McpCapability, McpCollectionDefinition, McpConnectionState, McpDefinitionReference, mcpOAuthClientSecretStorageKey, mcpPromptPrefix, McpServerCacheState, McpServerTransportType, McpStartServerInteraction } from '../common/mcpTypes.js';
 import { startServerAndWaitForLiveTools } from '../common/mcpTypesUtils.js';
-import { McpAddConfigurationCommand, type McpAddConfigurationTarget, McpInstallFromManifestCommand } from './mcpCommandsAddConfiguration.js';
+import { authorizeQuickBooksInBrowser, McpAddConfigurationCommand, type McpAddConfigurationTarget, McpInstallFromManifestCommand } from './mcpCommandsAddConfiguration.js';
 import { isAgentHostSessionResource } from '../../chat/common/chatSessionsService.js';
 import { McpConfigurationDestination } from './mcpConfigurationDestination.js';
 import { McpResourceQuickAccess, McpResourceQuickPick } from './mcpResourceQuickAccess.js';
@@ -617,7 +619,7 @@ export class McpAgentHostServerOptionsCommand extends Action2 {
 }
 
 interface ActionItem extends IQuickPickItem {
-	action: 'start' | 'stop' | 'restart' | 'showOutput' | 'config' | 'configSampling' | 'samplingLog' | 'resources' | 'enable' | 'oauthSecret';
+	action: 'start' | 'stop' | 'restart' | 'showOutput' | 'config' | 'configSampling' | 'samplingLog' | 'resources' | 'enable' | 'oauthSecret' | 'quickBooksReauthorize';
 }
 
 interface AuthActionItem extends IQuickPickItem {
@@ -683,6 +685,8 @@ export class McpServerOptionsCommand extends Action2 {
 		const samplingService = accessor.get(IMcpSamplingService);
 		const authenticationQueryService = accessor.get(IAuthenticationQueryService);
 		const authenticationService = accessor.get(IAuthenticationService);
+		const instantiationService = accessor.get(IInstantiationService);
+		const notificationService = accessor.get(INotificationService);
 		const server = mcpService.servers.get().find(s => s.definition.id === id && (!target || s.collection.id === target.collectionId));
 		if (!server) {
 			return;
@@ -722,6 +726,11 @@ export class McpServerOptionsCommand extends Action2 {
 
 		items.push(...this._getAuthActions(authenticationQueryService, server.definition.id));
 		const launch = serverDefinition?.launch;
+		const tokenStore = isNative && !disabled && collection?.remoteAuthority === null && collection.scope === StorageScope.PROFILE
+			&& launch?.type === McpServerTransportType.Stdio && launch.env.QUICKBOOKS_TOKEN_STORE_PATH;
+		if (isSignalCQuickBooksSandboxStore(tokenStore)) {
+			items.push({ label: localize('mcp.quickBooksReauthorize', "Sign In to QuickBooks Again…"), action: 'quickBooksReauthorize' });
+		}
 		const clientId = launch?.type === McpServerTransportType.HTTP ? launch.oauth?.clientId : undefined;
 		if (clientId && !clientId.includes('${')) {
 			items.push({ label: localize('mcp.editOAuthClientSecret', 'Set OAuth Client Secret…'), action: 'oauthSecret' });
@@ -805,6 +814,11 @@ export class McpServerOptionsCommand extends Action2 {
 					await commandService.executeCommand(McpCommandIds.SetOAuthClientSecret, clientId, launch.uri.toString(true), server.definition.label);
 				}
 				break;
+			case 'quickBooksReauthorize':
+				if (isSignalCQuickBooksSandboxStore(tokenStore)) {
+					await this._reauthorizeQuickBooks(server, tokenStore, instantiationService, notificationService);
+				}
+				break;
 			case 'showOutput':
 				server.showOutput();
 				break;
@@ -827,6 +841,29 @@ export class McpServerOptionsCommand extends Action2 {
 				break;
 			default:
 				assertNever(pick);
+		}
+	}
+
+	private async _reauthorizeQuickBooks(server: IMcpServer, tokenStore: string, instantiationService: IInstantiationService, notifications: INotificationService): Promise<void> {
+		const canResume = () => {
+			const launch = server.readDefinitions().get().server?.launch;
+			return !isContributionDisabled(server.enablement.get()) && launch?.type === McpServerTransportType.Stdio && launch.env.QUICKBOOKS_TOKEN_STORE_PATH === tokenStore;
+		};
+		if (!canResume()) { return; }
+		const wasRunning = !McpConnectionState.canBeStarted(server.connectionState.get().state);
+		let authorized = false;
+		try {
+			await server.withServerStopped(async () => {
+				if (canResume()) {
+					await authorizeQuickBooksInBrowser(instantiationService, (host, operationId) => host.reauthorizeQuickBooksSandbox(tokenStore, operationId));
+					authorized = true;
+				}
+			});
+		} catch (error) {
+			if (!isCancellationError(error)) { notifications.error(error); }
+		}
+		if ((authorized || wasRunning) && canResume()) {
+			await server.start({ promptType: 'all-untrusted' });
 		}
 	}
 
