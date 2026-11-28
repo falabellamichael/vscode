@@ -69,7 +69,7 @@ export function getSignalCExtensionDownload(listing: ISignalCExtensionListing): 
 	return `${getSignalCExtensionRepository(listing)}/releases/download/v${listing.version}/${listing.asset}`;
 }
 
-export function matchesSignalCExtension(listing: ISignalCExtensionListing, query: string): boolean {
+export function matchesSignalCExtension(listing: Pick<ISignalCExtensionListing, 'id' | 'name' | 'description' | 'repository' | 'keywords'>, query: string): boolean {
 	const text = [listing.id, listing.name, listing.description, listing.repository, ...listing.keywords].join(' ').toLowerCase();
 	return query.toLowerCase().trim().split(/\s+/).every(word => text.includes(word));
 }
